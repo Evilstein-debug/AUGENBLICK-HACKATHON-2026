@@ -62,9 +62,12 @@ def main() -> None:
             "tokenization",
             "मराठी भाषेत",
             "subword segmentation",
+            "ॐ भूर्भुवः स्व: तत्सवितुर्वरेण्यं भर्गो देवस्य धीमहि धियो यो नः प्रचोदयात् ॥",
+            "yellow"
         ]
         for text in examples:
             enc = loaded.encode(text)
+            print(enc)
             decoded = loaded.decode(enc.ids)
             print(f"\n  Input:   {text!r}")
             print(f"  Tokens:  {enc.tokens}")

@@ -1,5 +1,149 @@
 # Solutions to Tasks
 
+# Solutions to Tasks
+
+### TASK 1
+
+### Question :
+
+Take this Sanskrit mantra:
+
+ॐ भूर्भुवः स्व: तत्सवितुर्वरेण्यं भर्गो देवस्य धीमहि धियो यो नः प्रचोदयात् ॥
+
+Pick one model (BPE is a good choice), train it on a small corpus, and encode this string. Then trace what actually
+happened — from the moment you called encode() all the way to the final list of token IDs.
+
+What we're looking for:
+
+    Which files and classes were involved at each stage?
+    What did the normalizer do to the string before the model saw it?
+    What did the pre-tokenizer do after normalization?
+    How did the model turn pre-tokens into subword pieces?
+    How were those pieces turned back into a string during decode()?
+
+### ANSWER:
+
+***background:***
+
+spent HOURS understanding how llms work, stages of tokenization and general knowledge to even read this project's README
+
+***Understanding the context:***
+
+Very generously, within the examples folder we have ready to run code samples including that of bpe,
+
+THE CORPUS IS GIVEN
+observation about the corpus: for the given text to encode with is in sanskrit, the corpus has only few
+lines of sanskrit text.
+
+so umm yeah wild ride for the text to get encoded.
+
+ill paste the output first, and then try my best to explain what happened
+
+![OUTPUT_SCREENSHOT](reference_images/task1.png)
+
+***Files modified for the output:***
+
+added the input line within examples/train_bpe.py files
+line 65 to be precise
+
+Explanation:
+
+straight of the bat, we can see the input line is itself messed up, this is a pycharm, vscode terminal issue where the
+support for foreign languages arent supported.
+
+1. *Which files and classes were involved at each stage?*
+
+the train_bpe.py and  encode() & decode() function is written in tokenizer.py
+additionally a temporary ghost "corpus" is created for the script to run containing all the corpus*30 and then deleted
+automatically after the script is run (pretty nice automation that)
+
+the code block for encoder function:
+
+(line 93)
+
+```aiignore
+ def encode(self, text: str) -> Encoding:
+        """Encode *text* into an :class:`~abctokz.types.Encoding`.
+
+        The full pipeline is applied: normalization → pre-tokenization
+        → model tokenization → post-processing.
+
+        Args:
+            text: Raw input string.
+
+        Returns:
+            :class:`~abctokz.types.Encoding` with ids, tokens, and offsets.
+        """
+``` 
+
+2. *What did the normalizer do to the string before the model saw it?*
+
+in this specific line of encoder function implemention
+
+```aiignore
+        normalized = self._normalizer.normalize(text) if self._normalizer else text
+```
+
+It checks if a normalizer is attached to this tokenizer instance. If so, it passes the raw text through it (e.g.,
+lowercasing it). If not, it just passes the raw text through untouched
+
+if a normalizer exists, te rest of function operates on the variable *normalized* and not the original text
+
+3. *What did the pre-tokenizer do after normalization?*
+
+in the specific line of encoder function
+
+```aiignore
+        if self._pretokenizer:
+            pre_tokens = self._pretokenizer.pre_tokenize(normalized)
+        else:
+            pre_tokens = [normalized]
+```
+
+does really the same thing as the normalizer block, checks if a instance of pretokenizer is attacked, if not you can see
+it just directly puts the normalized text in a list, untouched
+
+else it pre tokenizes it
+
+### OPTIMIZATION SUGGESTION
+
+*maybe if we can run a custom pretokenize script instead of skipping the pretokenization process if there is no custom
+pre tokenizer?*
+
+4. How did the model turn pre-tokens into subword pieces?
+
+it does this in the 3rd stage, the tokenization process
+
+```aiignore
+        cursor = 0
+        for pre_tok in pre_tokens:
+            # Find the offset of this pre_token in the normalized string
+            start_pos = normalized.find(pre_tok, cursor)
+            if start_pos == -1:
+                start_pos = cursor
+
+            pairs = self._model.tokenize(pre_tok)
+            char_offset = start_pos
+            for tok_str, tok_id in pairs:
+                tok_len = len(tok_str.lstrip("##"))  # strip continuation prefix for offset
+                ids.append(tok_id)
+                tokens.append(tok_str)
+                offsets.append((char_offset, char_offset + len(pre_tok)))
+                is_special = int(tok_str in self._special_tokens)
+                special_mask.append(is_special)
+                attention_mask.append(1)
+
+            cursor = start_pos + len(pre_tok)
+```
+
+here it iterates through every sub token in the pre_token list, and it runs the bpe algorithm for every word,
+appending "##" and its unique id for every token.
+
+5. How were those pieces turned back into a string during decode()?
+
+yet to do
+
+
 
 ## Task 2 — Who Does What? Mapping Module Responsibilities
 
