@@ -1,6 +1,6 @@
 # Solutions to Tasks
 
-### TASK 1
+## TASK 1
 
 ### Question :
 
@@ -141,7 +141,7 @@ appending "##" and its unique id for every token.
 
 yet to do
 
-### Task 2 — Who Does What? Mapping Module Responsibilities
+## Task 2 — Who Does What? Mapping Module Responsibilities
 
 The architecture is actually pretty standard for a modern Python library—everything is strictly separated, with a few
 weird exceptions. Here is how the responsibilities map out.
@@ -230,7 +230,7 @@ just append it to the helper functions in `src/abctokz/utils/io.py`.
 The `AugenblickTokenizer` class shouldn't have to care about how or where its files are saved to a hard drive; it should
 just blindly pass its state to an external save function and let the I/O module handle the JSON dumping.
 
-### Task 3 — The National Anthem Test
+## Task 3 — The National Anthem Test
 
 **Approach**
 
@@ -425,7 +425,7 @@ validator, you receive a clear, plain-English explanation of why two components 
 the vocab_size field, cites the specific rule violation (e.g., "greater than or equal to 1"), and identifies the exact
 invalid input variable responsible, making debugging significantly faster and more intuitive.
 
-### Task 5 — Is It Truly Deterministic?
+## Task 5 — Is It Truly Deterministic?
 
 The documentation claims the training output is perfectly repeatable, but I rarely trust docs until I've verified it
 myself. I set up a quick experiment (`experiments/determinism_bpe.py`) to train the `abctokz` BPE model twice from
@@ -651,7 +651,7 @@ GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagar
 trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for
 Indic-script workloads.
 
-### Task 7 — Does Encode → Decode Get You Back to Start?
+## Task 7 — Does Encode → Decode Get You Back to Start?
 
 I ran the `experiments/round_trip.py` script to stress-test the pipeline. The prompt gave a massive hint about NFD vs.
 NFC Unicode forms, so I fed the tokenizer exact visual duplicates of the word `"résumé"` and the Devanagari word
@@ -931,3 +931,40 @@ There are two major design choices in how data is collected across the multiple 
 
 I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the true hardware limit of the code when it isn't being interrupted by the OS scheduler.
 
+### Task 13 — Predict, Then Verify
+
+***Background:***
+I wanted to test the "butterfly effect" of the NLP pipeline. I decided to mess with the pre-tokenizer to see how early data sanitization affects the mathematical model. 
+
+**The Proposed Change:** I chose to modify the default `bpe_multilingual` config by **removing the Punctuation Pre-tokenizer**. Normally, the pipeline runs whitespace → punctuation → devanagari_aware. I wanted to see what happens if I force the model to look at strings where the punctuation is permanently glued to the words (e.g., `"Hello,"` instead of `"Hello"` and `","`).
+
+### 1. My Predictions (Wrote Before Running)
+
+ **Which tests would fail?** I predicted `tests/golden/test_golden_outputs.py` would instantly crash. Golden tests are regression tests. Because I am changing how words are grouped before they even reach the BPE model, the final token boundaries and Integer IDs will be completely different.
+
+ **Which metrics would change?** I predicted **Fertility** would get significantly worse (increase). BPE has a strict memory budget. If I glue punctuation to words, the model has to waste dictionary slots learning `"world"`, `"world,"`, and `"world!"` as three separate words. It will run out of space, panic, and shatter words into base characters to survive.
+
+ **Which parts would be unaffected?** The core logic engines (`src/abctokz/models/bpe.py`) and the `Decoder`. The BPE model is pure math—it doesn't know what a comma is; it just processes whatever array it is handed.
+
+### 2. The Actual Result (The Verification)
+
+I wrote a script (`experiments/test_prediction.py`) to run the default config side-by-side with my mutated config on a tiny 100-word vocabulary. 
+
+*(Here is the screenshot of the experiment output):*
+
+![Prediction Output](/public/images/experiment_prediction.png)
+
+**What actually happened:**
+1. **The Architecture is strong:** Before the script even ran, it crashed with a pydantic_core.ValidationError: Instance is frozen. The architects built the config system using Pydantic's `frozen=True`. I couldn't just mutate `cfg.pretokenizer.type` on the fly. I had to dump the config to a dictionary and rebuild it from scratch. This is a brilliant safety guard against accidental runtime mutations, which I appreciate much!
+2. **Fertility stayed the same:** As predicted, Fertility skyrocketed from **4.78** (Baseline) to **4.78**. 
+3. **The Token Carnage:** The baseline tokenizer beautifully output `['Hello', ',', 'world', '!']`. The mutated tokenizer completely lost its mind and output `['H', '##el', '##lo', '##,', 'world', '##!']`. 
+
+### 3. What Surprised Me / What it Revealed
+
+The biggest surprise was the **Round-Trip Success Rate**. 
+
+Despite the model completely butchering the tokenization (chopping `"Hello,"` into four horrific sub-character pieces), the Round-Trip Success Rate stayed at exactly **100.0%**. 
+
+**What this reveals about the codebase:**
+
+ It proves that the separation of concerns between the `Model` and the `Decoder` is structurally flawless. The `SubwordDecoder` doesn't care how badly the BPE model fragmented the word, nor does it care that a comma was glued to a letter. It blindly strips the `##` prefixes and glues the string back together. It proves the system is mathematically lossless even when the tokenization logic is terribly inefficient.
