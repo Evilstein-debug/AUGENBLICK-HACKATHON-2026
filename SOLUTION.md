@@ -252,7 +252,9 @@ def _corpus_iter():
                         yield line
 ```
 
-### Task 3 — The National Anthem Test
+---
+
+## Task 3 — The National Anthem Test
 
 **Approach**
 
