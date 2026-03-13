@@ -927,7 +927,7 @@ predictable coverage is more valuable than maximal compression.
 
 ---
 
-### Task 11 — Can You Trust the Benchmark Numbers?
+## Task 11 — Can You Trust the Benchmark Numbers?
 
 ***background:***
 Before I even fired up the terminal, I did some analysis by reading through `src/abctokz/eval/benchmark.py`. I wanted to
@@ -999,7 +999,7 @@ about them:
 I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the
 true hardware limit of the code when it isn't being interrupted by the OS scheduler.
 
-### Task 13 — Predict, Then Verify
+## Task 13 — Predict, Then Verify
 
 ***Background:***
 I wanted to test the "butterfly effect" of the NLP pipeline. I decided to mess with the pre-tokenizer to see how early data sanitization affects the mathematical model. 
@@ -1036,3 +1036,69 @@ Despite the model completely butchering the tokenization (chopping `"Hello,"` in
 **What this reveals about the codebase:**
 
  It proves that the separation of concerns between the `Model` and the `Decoder` is structurally flawless. The `SubwordDecoder` doesn't care how badly the BPE model fragmented the word, nor does it care that a comma was glued to a letter. It blindly strips the `##` prefixes and glues the string back together. It proves the system is mathematically lossless even when the tokenization logic is terribly inefficient.
+
+
+## Task 14 — How Hard Would It Be to Add a Fourth Model?
+
+When I first read this task, I immediately jumped to `src/abctokz/models/base.py` and `src/abctokz/trainers/base.py` to figure out exactly what kind of "contract" a new model would need to sign. I wanted to see how deeply embedded the models were into the rest of the architecture. 
+
+What I found was surprisingly elegant, but with a few hidden traps. Here is my exact plan if I were to add Google's **WordPiece** model to this library.
+
+### 1. The Easy Part: What I would leave completely untouched
+The designers of the repo did a good job of decoupling the pipeline. I wouldn't have to touch **any** of these directories:
+* `src/abctokz/normalizers/`
+* `src/abctokz/pretokenizers/`
+* `src/abctokz/decoders/`
+* `src/abctokz/eval/`
+
+**Why?**
+
+ The core orchestrator (`tokenizer.py`) handles all the routing. By the time the text actually reaches the mathematical model, it has already been normalized and split into isolated words.
+ 
+Furthermore, as long as my new WordPiece model outputs standard `##` prefixes for subwords, the existing `SubwordDecoder` will automatically know how to glue them back together.
+
+### 2. What I would need to create from scratch
+I would need to create exactly two new files to satisfy the abstract base classes:
+
+1. **`src/abctokz/models/wordpiece.py`** (The Execution Engine)
+2. **`src/abctokz/trainers/wordpiece_trainer.py`** (The Learning Engine)
+
+Looking at the `Model` abstract base class, the extension point is incredibly narrow and highly developer-friendly, a very good design there.:
+
+```python
+    @abstractmethod
+    def tokenize(self, sequence: str) -> list[tuple[str, int]]:
+        """Tokenize a single *sequence* (pre-token) into ``(token, id)`` pairs."""
+```
+
+The architecture makes extension easy right here. Because sequence is just a single pre-token string, my new WordPiece model doesn't need to loop through sentences, handle whitespace, or worry about punctuation. It just needs to apply its math to that single word and return the (token, id) tuples.
+
+Similarly, the `Trainer` base class just asks for one thing:
+
+```python
+@abstractmethod
+    def train(self, corpus: Iterator[str]) -> Model:
+        """Train a model from *corpus*."""
+```
+It takes a raw text generator and gives out a compiled Model artifact.
+
+
+### 3. **What I would need to modify - the hard part**
+
+To actually wire the new model into the system, I'd have to edit the routing files:
+
+`src/abctokz/models/__init__.py` & `trainers/__init__.py`: To expose the new classes.
+
+`src/abctokz/config/defaults.py`: To add a new wordpiece_multilingual() helper function so users can easily spawn a config.
+
+`src/abctokz/tokenizer.py`: I'd have to update the from_config() and load() methods. Right now, there are likely if/elif statements checking if model_type == "bpe": ... that route the config to the correct class instantiation. I'd have to add my WordPiece branch there.
+
+### 4. The Single Biggest Obstacle
+
+While the object-oriented logic is easy, the Pydantic configuration schemas would be an absolute nightmare.
+
+We saw this exact issue in Task 13! The architecture uses deeply nested, strictly validated, and dynamically frozen Pydantic models in src/abctokz/config/schemas.py.
+
+**The architecture gets in the way**
+
+To add WordPiece, I couldn't just pass a `"wordpiece"` string. I would have to carefully construct a new `WordPieceConfig` class, strictly define all its hyperparameters (like `max_input_chars_per_word` or `unk_token`), and then successfully inject that new type into the massive Union type that validates the master TokenizerConfig.
