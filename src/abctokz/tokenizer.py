@@ -183,10 +183,9 @@ class AugenblickTokenizer:
         tokens = [inv_vocab.get(i, "") for i in ids]
         if skip_special_tokens:
             special_strs = set(self._special_tokens.keys())
-            # Also skip tokens that look like <special>
             tokens = [
                 t for t in tokens
-                if t and not (t in special_strs or (t.startswith("<") and t.endswith(">")))
+                if t and t not in special_strs
             ]
         return self._decoder.decode(tokens)
 

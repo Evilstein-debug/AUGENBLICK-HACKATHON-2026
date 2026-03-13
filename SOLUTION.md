@@ -141,6 +141,8 @@ appending "##" and its unique id for every token.
 
 yet to do
 
+---
+
 ## Task 2 — Who Does What? Mapping Module Responsibilities
 
 The architecture is actually pretty standard for a modern Python library—everything is strictly separated, with a few
@@ -318,6 +320,8 @@ GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagar
 trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for
 Indic-script workloads.
 
+---
+
 ## TASK 4 — How Does a Config Become a Tokenizer?
 
 To make a tokenizer from a config requires confirugation -> normalizer -> pretoken processor -> model -> post
@@ -484,6 +488,8 @@ def _corpus_iter():
                     line = " ".join(pretokenizer.pre_tokenize(line))
                 yield line
 ```
+
+---
 
 ## Task 6 - Making the Tokenizer Say "I Don't Know"
 
@@ -826,6 +832,8 @@ character sequence is stable. If normalization accidentally stripped or reordere
 word would visually "break," turning a correct Marathi word into a string of illegible characters with visible viramas
 <<<<<<< Updated upstream
 
+---
+
 ## TASK 9 - Measuring Phrase Difficulty
 
 ![FERTILITY_SCORE](reference_images/task9.png)
@@ -869,6 +877,8 @@ that unlike BPE, Unigram is probabilistic (using a Viterbi decoder). Rather than
 left to right, Unigram evaluates all possible character segmentations and assigns probabilities to them. Because we fed
 it a small corpus that contained the exact phrases we are evaluating, Unigram recognized that creating whole-word tokens
 was probabilistically the most efficient way to map the sequence, utilizing its vocabulary far more powerfully than BPE.
+
+---
 
 ## Task 10 — The Compression Trade-off
 
@@ -1143,6 +1153,8 @@ It proves that the separation of concerns between the `Model` and the `Decoder` 
 letter. It blindly strips the `##` prefixes and glues the string back together. It proves the system is mathematically
 lossless even when the tokenization logic is terribly inefficient.
 
+---
+
 ## Task 14 — How Hard Would It Be to Add a Fourth Model?
 
 When I first read this task, I immediately jumped to `src/abctokz/models/base.py` and `src/abctokz/trainers/base.py` to
@@ -1228,7 +1240,9 @@ To add WordPiece, I couldn't just pass a `"wordpiece"` string. I would have to c
 `WordPieceConfig` class, strictly define all its hyperparameters (like `max_input_chars_per_word` or `unk_token`), and
 then successfully inject that new type into the massive Union type that validates the master TokenizerConfig.
 
-### TASK 15 - Find Something That Breaks
+---
+
+## TASK 15 - Find Something That Breaks
 
 Task 15: Edge Case Analysis – Silent Erasure of <unk> Characters
 
@@ -1283,7 +1297,8 @@ Edge Case: Emojis and rare characters are silently erased during decoding instea
         if t and (t == unk or not (t in special_strs or (t.startswith("<") and t.endswith(">"))))
     ]
    ```
-   
+
+---   
 
 ## Task 16 — Is This Ready for Production?
 
@@ -1364,3 +1379,84 @@ the save function in the orchestrator is hardcoded to use local POSIX paths with
 **2nd priority**: The single-threaded I/O. We need to rewrite `_corpus_iter` using Python's multiprocessing to read files in parallel chunks.
 
 **3rd priority**: Local-only storage. We can temporarily bypass this by saving to a local docker volume and uploading it via an external bash script, so it's the least urgent.
+
+---
+
+## Task 17 — Make One Small Improvement
+
+For Task 17, I fixed a real behavior bug discovered in Task 12.
+
+### Problem statement
+
+The `decode()` API says `skip_special_tokens=True` should skip special tokens. But the implementation also dropped *any* token that looked like `<...>` even when it was not configured as special.
+
+That means normal text like `hello <div> world` could lose `<div>` during decode, which is silent data loss.
+
+### The code change
+
+I changed one line in `src/abctokz/tokenizer.py`:
+
+Before:
+
+```python
+if t and not (t in special_strs or (t.startswith("<") and t.endswith(">")))
+```
+
+After:
+
+```python
+if t and t not in special_strs
+```
+
+This keeps the behavior exactly aligned with the function contract: skip configured special tokens only.
+
+### Regression test added
+
+I added a focused integration test in `tests/integration/test_train_save_load.py`:
+
+- `test_decode_keeps_non_special_angle_bracket_tokens`
+
+What it verifies:
+
+1. Train WordLevel on a corpus containing `hello <div> world`.
+2. Encode and decode `hello <div> world`.
+3. Assert decoded output still contains `<div>`.
+
+### Why this is the right and minimal fix
+
+- **Localized:** only one behavior line changed in decode filtering.
+- **Safe:** no changes to model training, vocab building, or serialization format.
+- **High impact:** prevents silent deletion of HTML/XML-like and placeholder-like tokens.
+
+### Evidence that the fix works
+
+1) Regression test command:
+
+```bash
+.venv/bin/python -m pytest tests/integration/test_train_save_load.py -k angle_bracket -q
+
+(this means run tests matching "angle_bracket" in quiet mode)
+```
+
+Output:
+
+```text
+.  
+                                                                      [100%]
+(. = one test passed, [100%] = all tests passed)
+```
+
+2) Reproduction script from Task 12 after fix:
+
+```bash
+.venv/bin/python examples/task12_decode_gap.py
+```
+
+Output now:
+
+```text
+decoded_default='hello <div> world'
+round_trip_success_rate(default)= 1.000
+```
+
+Before the fix, `decoded_default` was `'hello world'` and round-trip success was `0.000`.

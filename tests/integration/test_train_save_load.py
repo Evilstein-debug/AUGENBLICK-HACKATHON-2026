@@ -68,6 +68,21 @@ class TestWordLevelPipeline:
         for b, s in zip(batch, singles):
             assert b.ids == s.ids
 
+    def test_decode_keeps_non_special_angle_bracket_tokens(self, tmp_path: Path) -> None:
+        corpus = tmp_path / "corpus_with_markup.txt"
+        corpus.write_text("hello <div> world\n" * 20, encoding="utf-8")
+
+        config = wordlevel_multilingual(vocab_size=50)
+        tokenizer = Tokenizer.from_config(config)
+        tokenizer.train([str(corpus)], config)
+
+        text = "hello <div> world"
+        enc = tokenizer.encode(text)
+        decoded = tokenizer.decode(enc.ids)
+
+        # <div> is a regular token in this corpus, not a configured special token.
+        assert decoded == text
+
 
 @pytest.mark.integration
 class TestBPEPipeline:
