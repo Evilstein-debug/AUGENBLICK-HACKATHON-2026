@@ -484,3 +484,160 @@ def _corpus_iter():
                             line = " ".join(pretokenizer.pre_tokenize(line))
                         yield line
 ```
+
+
+## Task 6 - Making the Tokenizer Say "I Don't Know"
+
+**Approach**
+
+We have to make the tokenizer produce <unk> (unknown tokens). Making the wordlevel model to produce <unk> tokens is the easiest as one word is one token for it. The vocabulary is built directly from words in the training corpus, if a word is not in the vocabulary, it will result in an <unk> token.
+
+I ran a controlled experiment across all three model families using one shared training corpus and three stress-test inputs. The reproducible script is `examples/task6_make_unk.py`.
+
+Training corpus used for all models was intentionally English-only:
+
+- `jana gana mana adhinayaka jaya he bharata bhagya vidhata`
+- `punjab sindhu gujarata maratha dravida utkala vanga`
+- `hello world tokenizer benchmark deterministic`
+
+Each line was repeated 80x so frequent English subwords are definitely learned.
+
+Test inputs:
+
+1. OOV English word: `xylophonically`
+2. Script mismatch: `जन गण मन`
+3. Unseen symbol in mixed text: `hello 😀 world`
+
+Run command:
+
+```bash
+.venv/bin/python examples/task6_make_unk.py
+```
+
+---
+
+### Raw output
+
+```
+=== WORDLEVEL ===
+vocab_size=22
+
+case_1_oov_word: 'xylophonically'
+tokens=['<unk>']
+ids=[0]
+unk_count=1, unk_rate=1.000
+
+case_2_script_mismatch: 'जन गण मन'
+tokens=['<unk>', '<unk>', '<unk>']
+ids=[0, 0, 0]
+unk_count=3, unk_rate=1.000
+
+case_3_unseen_symbol: 'hello 😀 world'
+tokens=['hello', '<unk>', 'world']
+ids=[10, 0, 21]
+unk_count=1, unk_rate=0.333
+
+=== BPE ===
+vocab_size=122
+
+case_1_oov_word: 'xylophonically'
+tokens=['x', '##y', '##l', '##o', '##p', '##h', '##o', '##n', '##i', '##c', '##a', '##ll', '##y']
+ids=[0, 85, 65, 72, 0, 49, 72, 70, 53, 21, 1, 68, 85]
+unk_count=2, unk_rate=0.154
+
+case_2_script_mismatch: 'जन गण मन'
+tokens=['ज', '##न', 'ग', '##ण', 'म', '##न']
+ids=[0, 0, 0, 0, 0, 0]
+unk_count=6, unk_rate=1.000
+
+case_3_unseen_symbol: 'hello 😀 world'
+tokens=['he', '##ll', '##o', '😀', 'w', '##or', '##ld']
+ids=[102, 68, 72, 0, 120, 75, 67]
+unk_count=1, unk_rate=0.143
+
+=== UNIGRAM ===
+vocab_size=200
+
+case_1_oov_word: 'xylophonically'
+tokens=['<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>']
+ids=[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+unk_count=14, unk_rate=1.000
+
+case_2_script_mismatch: 'जन गण मन'
+tokens=['<unk>', '<unk>', '<unk>', '<unk>', '<unk>', '<unk>']
+ids=[0, 0, 0, 0, 0, 0]
+unk_count=6, unk_rate=1.000
+
+case_3_unseen_symbol: 'hello 😀 world'
+tokens=['hello', '<unk>', 'world']
+ids=[10, 0, 21]
+unk_count=1, unk_rate=0.333
+```
+
+---
+
+### At least two different causes of `<unk>`
+
+#### Cause 1: Word-level vocabulary miss (model limit)
+
+- Seen in: **WordLevel** on `xylophonically`
+- Trigger: token not present as an exact full word in vocab.
+- Why: `WordLevelModel.tokenize()` does direct dictionary lookup for the whole pre-token. No subword decomposition.
+- Evidence: output is exactly `['<unk>']`, `unk_rate=1.000`.
+
+This is a **fundamental limit of WordLevel** when vocabulary coverage is low.
+
+#### Cause 2: Script mismatch vs training data (corpus coverage issue)
+
+- Seen in: **BPE + Unigram + WordLevel** on `जन गण मन`
+- Trigger: model trained on English-only corpus, then asked to encode Devanagari.
+- Why:
+    - BPE can segment into characters but those characters are absent from vocab, so all IDs become 0.
+    - Unigram Viterbi cannot find known pieces and repeatedly falls back to `<unk>`.
+    - WordLevel has no Devanagari whole-word entries.
+- Evidence: all three hit `unk_rate=1.000` for this input.
+
+This is primarily a **training corpus coverage** failure, not a normalizer failure.
+
+#### Cause 3: Unseen symbol class (emoji) not covered in vocab
+
+- Seen in: all models on `hello 😀 world`
+- Trigger: `😀` is absent from training corpus.
+- Why:
+    - WordLevel: emoji token becomes OOV word.
+    - BPE: emoji appears as single piece but maps to unknown ID.
+    - Unigram: no piece exists, so fallback emits `<unk>`.
+- Evidence: each model outputs one unknown for emoji.
+
+This is a **symbol coverage** issue that appears even when surrounding text is known.
+
+---
+
+### Which model handles unknown inputs most gracefully?
+
+**Most graceful: BPE**
+
+- For OOV English word `xylophonically`, BPE still recovers most of the tokenization and only 2/13 pieces are unknown (`unk_rate=0.154`).
+- It preserves useful partial information through subword decomposition.
+
+**Most fragile: WordLevel (and Unigram in this specific setup)**
+
+- WordLevel collapses any unseen word directly to `<unk>` because it has no subword fallback.
+- Unigram here is also very brittle on OOV forms, producing 14 unknowns for one word due to piece-table miss.
+
+In short: for open-vocabulary behavior, **subword BPE > WordLevel**, and Unigram quality depends heavily on whether piece coverage is broad enough.
+
+---
+
+### One concrete suggestion to reduce UNK rate without retraining
+
+Add **inference-time class mapping** before encode:
+
+- map emojis to `<EMOJI>`
+- map URLs to `<URL>`
+- map long numbers to `<NUM>`
+
+Then add these as special tokens in the tokenizer artifacts. This does not retrain model weights but converts unpredictable OOV surface forms into stable known categories, reducing `<unk>` spikes in production logs.
+
+If I had to pick one immediate operational fix for this repository: use BPE for multilingual inference and add `<EMOJI>/<URL>/<NUM>` preprocessing guards.
+
