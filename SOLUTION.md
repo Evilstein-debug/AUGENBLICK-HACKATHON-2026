@@ -206,55 +206,7 @@ def save(self, path: str) -> None:
 
 The `AugenblickTokenizer` class shouldn't have to care about how or where its files are saved to a hard drive; it should just blindly pass its state to an external save function and let the I/O module handle the JSON dumping.
 
-### Task 5 — Is It Truly Deterministic?
-
-The documentation claims the training output is perfectly repeatable, but I rarely trust docs until I've verified it myself. I set up a quick experiment (`experiments/determinism_bpe.py`) to train the `abctokz` BPE model twice from scratch on the exact same dataset to see if anything drifted.
-
-### What IS Deterministic?
-
-So, the experiment found that the core artifacts are bulletproof. Our tests confirmed these outputs are **100% identical** across runs:
-
-* **Vocabulary Order (`vocab.json`):** Both generated files were byte-for-byte matches (exactly 2529 chars). If you dig into the training code, it explicitly sorts frequency ties alphabetically. That prevents the random hash-map ordering bugs that usually plague Python dictionaries.
-* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every single time (2231 chars). 
-* **Token Outputs:** Encoding the same benchmark text through both tokenizer instances fired back the exact same token arrays and ID numbers.
-
-*(I've attached a screenshot of the terminal output showing the matching arrays and file diffs:*
-
-![OUTPUT_SCREENSHOT](/public/images/experiment_bpe.png)
-
-### What is NOT Deterministic
-
-While the compiled models are identical, the hardware execution is not:
-
-* **Training Time:** Run 1 clocked in at 0.0913 seconds, while Run 2 immediately dropped to 0.0099 seconds. 
-
-This isn't a bug in the code. It is just the reality of CPU caching (the data was already warm in memory for the second run), thermal throttling, and OS background noise. The time varies, but it doesn't lessen the final tokenizer artifacts.
-
-### Remaining Risks
-
-Even though this specific local test passed, determinism is incredibly fragile. Here are the edge cases that I think could realistically break this codebase:
-
-1. **Cross-Platform Math:** The Unigram model relies heavily on floating-point probabilities (`math.log`). Different CPU architectures (like an M-series Mac vs. an Intel server) handle deep decimal rounding slightly differently. A tiny precision difference at the 15th decimal place can flip a probability tie-breaker, completely altering the token boundaries.
-2. **Future Multi-threading:** Right now, the data pipeline is single-threaded. If a developer later tries to optimize the `_corpus_iter()` generator by parallelizing the file reads without strictly enforcing the order of the results, chunks of text will hit the trainer in a random sequence. That race condition will immediately destroy the determinism..
-
-```
-def _corpus_iter():
-            for path in corpus_paths:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if normalizer:
-                            line = normalizer.normalize(line)
-                        if pretokenizer:
-                            line = " ".join(pretokenizer.pre_tokenize(line))
-                        yield line
-```
-
----
-
-## Task 3 — The National Anthem Test
+### Task 3 — The National Anthem Test
 
 **Approach**
 
@@ -327,3 +279,53 @@ This comparison makes the design intent of `abctokz` concrete: the library exist
 ```
 
 GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagari** compared to an `abctokz` BPE tokenizer trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for Indic-script workloads.
+
+### TASK 4 — How Does a Config Become a Tokenizer?
+
+
+
+### Task 5 — Is It Truly Deterministic?
+
+The documentation claims the training output is perfectly repeatable, but I rarely trust docs until I've verified it myself. I set up a quick experiment (`experiments/determinism_bpe.py`) to train the `abctokz` BPE model twice from scratch on the exact same dataset to see if anything drifted.
+
+### What IS Deterministic?
+
+So, the experiment found that the core artifacts are bulletproof. Our tests confirmed these outputs are **100% identical** across runs:
+
+* **Vocabulary Order (`vocab.json`):** Both generated files were byte-for-byte matches (exactly 2529 chars). If you dig into the training code, it explicitly sorts frequency ties alphabetically. That prevents the random hash-map ordering bugs that usually plague Python dictionaries.
+* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every single time (2231 chars). 
+* **Token Outputs:** Encoding the same benchmark text through both tokenizer instances fired back the exact same token arrays and ID numbers.
+
+*(I've attached a screenshot of the terminal output showing the matching arrays and file diffs:*
+
+![OUTPUT_SCREENSHOT](/public/images/experiment_bpe.png)
+
+### What is NOT Deterministic
+
+While the compiled models are identical, the hardware execution is not:
+
+* **Training Time:** Run 1 clocked in at 0.0913 seconds, while Run 2 immediately dropped to 0.0099 seconds. 
+
+This isn't a bug in the code. It is just the reality of CPU caching (the data was already warm in memory for the second run), thermal throttling, and OS background noise. The time varies, but it doesn't lessen the final tokenizer artifacts.
+
+### Remaining Risks
+
+Even though this specific local test passed, determinism is incredibly fragile. Here are the edge cases that I think could realistically break this codebase:
+
+1. **Cross-Platform Math:** The Unigram model relies heavily on floating-point probabilities (`math.log`). Different CPU architectures (like an M-series Mac vs. an Intel server) handle deep decimal rounding slightly differently. A tiny precision difference at the 15th decimal place can flip a probability tie-breaker, completely altering the token boundaries.
+2. **Future Multi-threading:** Right now, the data pipeline is single-threaded. If a developer later tries to optimize the `_corpus_iter()` generator by parallelizing the file reads without strictly enforcing the order of the results, chunks of text will hit the trainer in a random sequence. That race condition will immediately destroy the determinism..
+
+```
+def _corpus_iter():
+            for path in corpus_paths:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if normalizer:
+                            line = normalizer.normalize(line)
+                        if pretokenizer:
+                            line = " ".join(pretokenizer.pre_tokenize(line))
+                        yield line
+```
