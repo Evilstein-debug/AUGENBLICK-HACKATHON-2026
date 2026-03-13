@@ -150,6 +150,18 @@ appending "##" and its unique id for every token.
    this decode() is a bit buggy where it ignores any emojis/special characters or any <unk> token, we have spoken about
    this in further detail in the upcoming tasks
 
+_MENTAL MAP FOR HOW THINGS ARE FLOWING_
+
+Think of it like sending a letter through a post office with four counters. You hand your raw text to the first
+counter (normalizer), which cleans it up — straightening out Unicode quirks, handling special Devanagari characters — so
+everyone downstream sees a tidy, consistent version. It then passes to the second counter (pre-tokenizer), which acts
+like a scissor, roughly chopping the text into logical chunks — usually by whitespace or punctuation — so the model
+doesn't have to figure out word boundaries itself. Those chunks go to the third counter (model — BPE here), which is the
+real brain: it has learned from a corpus how to split each chunk into the most efficient smaller pieces, and it stamps
+each piece with a number (token ID). Finally, if needed, a fourth counter (post-processor) slips in special bookend
+tokens like <bos> or <eos>. The end result is a list of numbers. To reverse it, you just walk backward through the last
+counter (decoder), trade each number back for its piece, and stitch the pieces back into a sentence.
+
 ---
 
 ## Task 2 — Who Does What? Mapping Module Responsibilities
@@ -1344,19 +1356,19 @@ The first major gap is that the BPE algorithm has an O(N²) time complexity.
     def _apply_merges(self, pieces: list[str]) -> list[str]:
 
 
-    while len(pieces) > 1:
-        best_rank: int | None = None
-        best_idx = -1
+while len(pieces) > 1:
+    best_rank: int | None = None
+    best_idx = -1
 
-        for i in range(len(pieces) - 1):
-            pair = (pieces[i], pieces[i + 1])
-            rank = self._merges.get_rank(pair)
-            if rank is not None and (best_rank is None or rank < best_rank):
-                best_rank = rank
-                best_idx = i
+    for i in range(len(pieces) - 1):
+        pair = (pieces[i], pieces[i + 1])
+        rank = self._merges.get_rank(pair)
+        if rank is not None and (best_rank is None or rank < best_rank):
+            best_rank = rank
+            best_idx = i
 
-        if best_idx == -1:
-            break
+    if best_idx == -1:
+        break
 ```
 
 For every single merge, it rescans the entire array of remaining pieces inside a loop. For long, agglomerated Hindi
@@ -1390,7 +1402,7 @@ The third gap is local-only storage coupling.
     def save(self, path: str) -> None:
 
 
-    out = ensure_dir(path)
+out = ensure_dir(path)
 self._model.save(str(out))
 ```
 
