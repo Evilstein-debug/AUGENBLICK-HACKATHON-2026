@@ -490,7 +490,7 @@ def _corpus_iter():
 
 **Approach**
 
-We have to make the tokenizer produce <unk> (unknown tokens). Making the wordlevel model to produce <unk> tokens is the easiest as one word is one token for it. The vocabulary is built directly from words in the training corpus, if a word is not in the vocabulary, it will result in an <unk> token.
+We have to make the tokenizer produce `<unk>` (unknown tokens). Making the wordlevel model to produce `<unk>` tokens is the easiest as one word is one token for it. The vocabulary is built directly from words in the training corpus, if a word is not in the vocabulary, it will result in an `<unk>` token.
 
 I ran a controlled experiment across all three model families using one shared training corpus and three stress-test inputs. The reproducible script is `examples/task6_make_unk.py`.
 
