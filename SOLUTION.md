@@ -726,6 +726,7 @@ loses a single comma, this metric scores it as a complete 0 for that document. I
 rates to tell you how broken the string is.
 
 ---
+
 ## TASK 8 - What Does the Normalizer Actually Do?
 
 It is a common misconception that a normalizer's primary job is to strip away punctuation, remove commas, or
@@ -820,7 +821,49 @@ Why NFC matters here: While NFC primarily focuses on combining marks (like matra
 character sequence is stable. If normalization accidentally stripped or reordered the bytes surrounding a ZWJ/ZWNJ, the
 word would visually "break," turning a correct Marathi word into a string of illegible characters with visible viramas
 
+## TASK 9 - Measuring Phrase Difficulty
 
+![FERTILITY_SCORE](reference_images/task9.png)
+
+### Which phrase is harder to tokenize efficiently, and why?
+
+The Marathi phrase ("गणपती बप्पा मोरया, पुढच्या वर्षी लवकर या!") is structurally harder to tokenize efficiently for
+classical subword algorithms than the Sindhi phrase ("आयो लाल, सभई चायो, झूलेलाल!").
+
+Why? The Marathi phrase contains a much higher density of conjunct consonants and ligatures, formed by half-letters and
+the halant/virama marker (e.g., प् + प in बप्पा, ढ + च् + य in पुढच्या, र् + ष in वर्षी).
+
+Because BPE relies strictly on brute-force character pairing based on frequency, it has a very difficult time swallowing
+the intermediate ् (virama) characters alongside the base consonants unless the specific conjunct appears massively
+often in the training data.
+
+Notice how even when we gave BPE a 800-token vocabulary, it still fragmented the Marathi word पुढच्या into 5 distinct
+pieces: ['प', '##ु', '##ढ', '##च्', '##या'].
+By contrast, the Sindhi phrase largely consists of sequential vowels and full, isolated consonants (like आयो or लाल),
+which BPE finds much easier to fuse together (['आ', '##यो']).
+As a result, BPE peaks at a massive 4.71 fertility for the Marathi phrase compared to 4.60 for the Sindhi phase. Even
+well-trained (800 vocab), the BPE struggles heavily, yielding 3.71 fertility for Marathi compared to 3.40 for Sindhi.
+
+### Does the fertility change meaningfully as you vary the vocabulary size (e.g., 100 vs 400 vs 800)? What does that tell you?
+
+Yes, fertility changes drastically across vocabulary sizes—but the change reveals a staggering difference in how BPE vs
+Unigram works.
+
+The BPE Compression Plateau For BPE, increasing vocabulary size from 100 to 400 predictably lowers
+fertility (from ~4.6 to ~3.5). However, moving from 400 to 800 yielded absolutely no improvement (3.40 and 3.71,
+respectively). This tells us that BPE's greedy, deterministic merge strategy gets "stuck." Because it builds exactly
+from left to right combining the most frequent pair it sees at that exact moment, it locks itself into suboptimal, rigid
+fragments for Devanagari words and fails to ever stitch together the entire word, even when it has 400 extra empty slots
+in its vocabulary to do so.
+
+Unigram's Vocabulary Collapse Look at the Unigram model. At a vocabulary of 100, fertility is somewhat
+broken (and it generates an absurd amount of <unk> tokens—notice the ['<unk>', '<unk>'] spam because it aggressively
+drops rare characters to enforce its probabilities). But the moment Unigram hits 400 vocabulary slots, its fertility
+instantly plummets to a perfect 1.00. It perfectly segments the full words (['गणपती', 'बप्पा', 'मोरया,']). This tells us
+that unlike BPE, Unigram is probabilistic (using a Viterbi decoder). Rather than greedily merging raw byte pairs from
+left to right, Unigram evaluates all possible character segmentations and assigns probabilities to them. Because we fed
+it a small corpus that contained the exact phrases we are evaluating, Unigram recognized that creating whole-word tokens
+was probabilistically the most efficient way to map the sequence, utilizing its vocabulary far more powerfully than BPE.
 
 ## Task 10 — The Compression Trade-off
 
@@ -829,7 +872,8 @@ For this task I changed one configuration axis: **model family** while keeping c
 - Config A: `bpe_multilingual(vocab_size=200)`
 - Config B: `wordlevel_multilingual(vocab_size=200)`
 
-I used the same training corpus for both and evaluated on the same mixed set (English, Devanagari, rare OOV words, emoji). Reproducible script: `examples/task10_tradeoff.py`.
+I used the same training corpus for both and evaluated on the same mixed set (English, Devanagari, rare OOV words,
+emoji). Reproducible script: `examples/task10_tradeoff.py`.
 
 Run command:
 
@@ -839,16 +883,18 @@ Run command:
 
 ### Output Screenshot
 
-This is the output for the examples/task10_tradeoff.py script. It is clearly visible from this execution that after keeping the vocab size and the sample input same, we get vastly different results when we change the models. Less token fertility and less number of tokens isn't always better especially in real world pipelines where accuracy matters more.
+This is the output for the examples/task10_tradeoff.py script. It is clearly visible from this execution that after
+keeping the vocab size and the sample input same, we get vastly different results when we change the models. Less token
+fertility and less number of tokens isn't always better especially in real world pipelines where accuracy matters more.
 
 ![OUTPUT SCREENSHOT](/public/images/task10_tradeoff.png)
 
 ### Measured results
 
-| Configuration | Fertility (lower is better) | UNK rate (lower is better) | Mean tokens/sentence |
-|---|---:|---:|---:|
-| BPE (vocab_size=200) | 4.000 | 0.071 | 16.800 |
-| WordLevel (vocab_size=200) | 1.000 | 0.143 | 4.200 |
+| Configuration              | Fertility (lower is better) | UNK rate (lower is better) | Mean tokens/sentence |
+|----------------------------|----------------------------:|---------------------------:|---------------------:|
+| BPE (vocab_size=200)       |                       4.000 |                      0.071 |               16.800 |
+| WordLevel (vocab_size=200) |                       1.000 |                      0.143 |                4.200 |
 
 ### What improved and what got worse?
 
@@ -857,8 +903,10 @@ This is the output for the examples/task10_tradeoff.py script. It is clearly vis
 
 Concrete evidence from the same run:
 
-- For `xylophonically quantumflux`, WordLevel outputs `['<unk>', '<unk>']`, while BPE still decomposes into many known subpieces and only some unknown IDs.
-- For `hello 😀 world`, both models hit unknown on emoji, but WordLevel loses whole-token resolution much faster on unseen words.
+- For `xylophonically quantumflux`, WordLevel outputs `['<unk>', '<unk>']`, while BPE still decomposes into many known
+  subpieces and only some unknown IDs.
+- For `hello 😀 world`, both models hit unknown on emoji, but WordLevel loses whole-token resolution much faster on
+  unseen words.
 
 ### Is this a real trade-off or does one config dominate?
 
@@ -873,63 +921,83 @@ Neither dominates across both goals.
 
 I would **not** switch from BPE to WordLevel for multilingual production ingestion.
 
-Reason: lower fertility from WordLevel looks attractive, but higher unknown rate is riskier for real world tasks, especially for long spellings, names, transliteration drift, and user-generated text. For most real pipelines, predictable coverage is more valuable than maximal compression.
+Reason: lower fertility from WordLevel looks attractive, but higher unknown rate is riskier for real world tasks,
+especially for long spellings, names, transliteration drift, and user-generated text. For most real pipelines,
+predictable coverage is more valuable than maximal compression.
 
 ---
 
 ### Task 11 — Can You Trust the Benchmark Numbers?
 
 ***background:***
-Before I even fired up the terminal, I did some analysis by reading through `src/abctokz/eval/benchmark.py`. I wanted to predict what would happen just by looking at the math. Then, I wrote a quick script (`experiments/test_benchmark_trust.py`) to force the `BenchmarkRunner` to execute twice in a row against the exact same compiled tokenizer and text corpus to see if my predictions held up. They did.
+Before I even fired up the terminal, I did some analysis by reading through `src/abctokz/eval/benchmark.py`. I wanted to
+predict what would happen just by looking at the math. Then, I wrote a quick script (
+`experiments/test_benchmark_trust.py`) to force the `BenchmarkRunner` to execute twice in a row against the exact same
+compiled tokenizer and text corpus to see if my predictions held up. They did.
 
 *(Here is the screenshot of the terminal output showing the back-to-back runs):*
 
 ![Experiment Output](/public/images/experiment_benchmark.png)
 
 **1. Which metrics are perfectly stable?**
-I figured this out before running the code. The "Intrinsic" metrics—**Fertility**, **UNK rate**, **Mean tokens per sentence**, and **Round-trip success rate**—are rock solid.
+I figured this out before running the code. The "Intrinsic" metrics—**Fertility**, **UNK rate**, **Mean tokens per
+sentence**, and **Round-trip success rate**—are rock solid.
 
-**WHY:** 
+**WHY:**
 
-We proved in Task 5 that algorithms like BPE are deterministic. Since they are just pure mathematical functions applied to an array, feeding the same string into the same vocabulary rules will output the exact same integer arrays every single time. Arrays don't randomly change sizes between runs.
+We proved in Task 5 that algorithms like BPE are deterministic. Since they are just pure mathematical functions applied
+to an array, feeding the same string into the same vocabulary rules will output the exact same integer arrays every
+single time. Arrays don't randomly change sizes between runs.
 
 **2. Which metrics vary (and why is that acceptable)?**
 
 **Throughput (sps)** and **Elapsed Seconds** bounce around wildly between runs.
 
-**WHY:** 
+**WHY:**
 
-In the `BenchmarkRunner`, the elapsed time is calculated by tracking `t["elapsed"]` inside a loop. That relies on the system's wall-clock time. So, you are fighting the physical reality of the hardware background OS processes, CPU cache warmth, and thermal throttling mean the processor executes the loop at slightly different speeds each time.
+In the `BenchmarkRunner`, the elapsed time is calculated by tracking `t["elapsed"]` inside a loop. That relies on the
+system's wall-clock time. So, you are fighting the physical reality of the hardware background OS processes, CPU cache
+warmth, and thermal throttling mean the processor executes the loop at slightly different speeds each time.
 
 **3. Is there anything you would *not* trust?**
-Yes, I had a massive realization when reading the source code. I absolutely do not trust the **Throughput (sps)** metric as a holistic measure of the tokenizer's overall speed. 
+Yes, I had a massive realization when reading the source code. I absolutely do not trust the **Throughput (sps)** metric
+as a holistic measure of the tokenizer's overall speed.
 
 Look at this exact block from the runner:
 
 ```python
             for _ in range(cfg.timed_runs):
-                with timed() as t:
-                    encodings = tokenizer.encode_batch(sentences)
-                total_elapsed += t["elapsed"]
-                all_encodings = encodings
+    with timed() as t:
+        encodings = tokenizer.encode_batch(sentences)
+    total_elapsed += t["elapsed"]
+    all_encodings = encodings
 
-            avg_elapsed = total_elapsed / cfg.timed_runs
-            decoded = [tokenizer.decode(enc.ids) for enc in all_encodings]
+avg_elapsed = total_elapsed / cfg.timed_runs
+decoded = [tokenizer.decode(enc.ids) for enc in all_encodings]
 ```
 
-The `with timed() as t:` context manager only wraps the encode_batch function. Right below it, completely outside the timer, is the decode function! This benchmark claims to measure overall "Tokenizer Throughput", but it is secretly only measuring the Encoding phase, completely failing the decoding time.
+The `with timed() as t:` context manager only wraps the encode_batch function. Right below it, completely outside the
+timer, is the decode function! This benchmark claims to measure overall "Tokenizer Throughput", but it is secretly only
+measuring the Encoding phase, completely failing the decoding time.
 
 **4. Is it the right one?**
 
-There are two major design choices in how data is collected across the multiple `timed_runs`, and I have mixed feelings about them:
+There are two major design choices in how data is collected across the multiple `timed_runs`, and I have mixed feelings
+about them:
 
-* **The Brilliant Choice**: Inside the loop, they reassign the variable using all_encodings = encodings. This essentially overwrites the array and only keeps the final run's payload for the intrinsic metric calculations (fertility, etc.). Since the output is mathematically deterministic, calculating fertility 10 times inside a loop would be a massive waste of CPU. Doing it once at the very end is incredibly smart.
+* **The Brilliant Choice**: Inside the loop, they reassign the variable using all_encodings = encodings. This
+  essentially overwrites the array and only keeps the final run's payload for the intrinsic metric calculations (
+  fertility, etc.). Since the output is mathematically deterministic, calculating fertility 10 times inside a loop would
+  be a massive waste of CPU. Doing it once at the very end is incredibly smart.
 
-* **The Flawed Choice**: They sum up the times and calculate an average with avg_elapsed = total_elapsed / cfg.timed_runs. Taking the mean of execution times is a classic benchmarking anti-pattern. If the Python Garbage Collector kicks in during Run 4 and pauses the thread for 200ms, it ruins the average for the whole batch.
+* **The Flawed Choice**: They sum up the times and calculate an average with avg_elapsed = total_elapsed /
+  cfg.timed_runs. Taking the mean of execution times is a classic benchmarking anti-pattern. If the Python Garbage
+  Collector kicks in during Run 4 and pauses the thread for 200ms, it ruins the average for the whole batch.
 
 ### The fix I think of:
 
-I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the true hardware limit of the code when it isn't being interrupted by the OS scheduler.
+I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the
+true hardware limit of the code when it isn't being interrupted by the OS scheduler.
 
 ### Task 13 — Predict, Then Verify
 
