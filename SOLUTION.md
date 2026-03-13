@@ -745,4 +745,58 @@ Neither dominates across both goals.
 I would **not** switch from BPE to WordLevel for multilingual production ingestion.
 
 Reason: lower fertility from WordLevel looks attractive, but higher unknown rate is riskier for real world tasks, especially for long spellings, names, transliteration drift, and user-generated text. For most real pipelines, predictable coverage is more valuable than maximal compression.
+### Task 11 — Can You Trust the Benchmark Numbers?
+
+***background:***
+Before I even fired up the terminal, I did some analysis by reading through `src/abctokz/eval/benchmark.py`. I wanted to predict what would happen just by looking at the math. Then, I wrote a quick script (`experiments/test_benchmark_trust.py`) to force the `BenchmarkRunner` to execute twice in a row against the exact same compiled tokenizer and text corpus to see if my predictions held up. They did.
+
+*(Here is the screenshot of the terminal output showing the back-to-back runs):*
+
+![Experiment Output](/public/images/experiment_benchmark.png)
+
+**1. Which metrics are perfectly stable?**
+I figured this out before running the code. The "Intrinsic" metrics—**Fertility**, **UNK rate**, **Mean tokens per sentence**, and **Round-trip success rate**—are rock solid.
+
+**WHY:** 
+
+We proved in Task 5 that algorithms like BPE are deterministic. Since they are just pure mathematical functions applied to an array, feeding the same string into the same vocabulary rules will output the exact same integer arrays every single time. Arrays don't randomly change sizes between runs.
+
+**2. Which metrics vary (and why is that acceptable)?**
+
+**Throughput (sps)** and **Elapsed Seconds** bounce around wildly between runs.
+
+**WHY:** 
+
+In the `BenchmarkRunner`, the elapsed time is calculated by tracking `t["elapsed"]` inside a loop. That relies on the system's wall-clock time. So, you are fighting the physical reality of the hardware background OS processes, CPU cache warmth, and thermal throttling mean the processor executes the loop at slightly different speeds each time.
+
+**3. Is there anything you would *not* trust?**
+Yes, I had a massive realization when reading the source code. I absolutely do not trust the **Throughput (sps)** metric as a holistic measure of the tokenizer's overall speed. 
+
+Look at this exact block from the runner:
+
+```python
+            for _ in range(cfg.timed_runs):
+                with timed() as t:
+                    encodings = tokenizer.encode_batch(sentences)
+                total_elapsed += t["elapsed"]
+                all_encodings = encodings
+
+            avg_elapsed = total_elapsed / cfg.timed_runs
+            decoded = [tokenizer.decode(enc.ids) for enc in all_encodings]
+```
+
+The `with timed() as t:` context manager only wraps the encode_batch function. Right below it, completely outside the timer, is the decode function! This benchmark claims to measure overall "Tokenizer Throughput", but it is secretly only measuring the Encoding phase, completely failing the decoding time.
+
+**4. Is it the right one?**
+
+There are two major design choices in how data is collected across the multiple `timed_runs`, and I have mixed feelings about them:
+
+* **The Brilliant Choice**: Inside the loop, they reassign the variable using all_encodings = encodings. This essentially overwrites the array and only keeps the final run's payload for the intrinsic metric calculations (fertility, etc.). Since the output is mathematically deterministic, calculating fertility 10 times inside a loop would be a massive waste of CPU. Doing it once at the very end is incredibly smart.
+
+* **The Flawed Choice**: They sum up the times and calculate an average with avg_elapsed = total_elapsed / cfg.timed_runs. Taking the mean of execution times is a classic benchmarking anti-pattern. If the Python Garbage Collector kicks in during Run 4 and pauses the thread for 200ms, it ruins the average for the whole batch.
+
+### The fix I think of:
+
+I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the true hardware limit of the code when it isn't being interrupted by the OS scheduler.
+
 
