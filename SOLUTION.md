@@ -725,7 +725,11 @@ Because it uses a strict check, it is a **binary pass/fail**. If a 5,000-word do
 loses a single comma, this metric scores it as a complete 0 for that document. It doesn't measure character-level error
 rates to tell you how broken the string is.
 
+<<<<<<< Updated upstream
 ---
+
+=======
+> > > > > > > Stashed changes
 
 ## TASK 8 - What Does the Normalizer Actually Do?
 
@@ -820,6 +824,7 @@ connect.
 Why NFC matters here: While NFC primarily focuses on combining marks (like matras or nuktas), it ensures the underlying
 character sequence is stable. If normalization accidentally stripped or reordered the bytes surrounding a ZWJ/ZWNJ, the
 word would visually "break," turning a correct Marathi word into a string of illegible characters with visible viramas
+<<<<<<< Updated upstream
 
 ## TASK 9 - Measuring Phrase Difficulty
 
@@ -967,10 +972,10 @@ Look at this exact block from the runner:
 
 ```python
             for _ in range(cfg.timed_runs):
-    with timed() as t:
-        encodings = tokenizer.encode_batch(sentences)
-    total_elapsed += t["elapsed"]
-    all_encodings = encodings
+with timed() as t:
+    encodings = tokenizer.encode_batch(sentences)
+total_elapsed += t["elapsed"]
+all_encodings = encodings
 
 avg_elapsed = total_elapsed / cfg.timed_runs
 decoded = [tokenizer.decode(enc.ids) for enc in all_encodings]
@@ -1003,7 +1008,8 @@ true hardware limit of the code when it isn't being interrupted by the OS schedu
 
 ## Task 12 - Where the Design Lies to You
 
-This task asks for a gap between architecture intent and real behavior. I found it in the `decode()` function inside `src/abctokz/tokenizer.py` as mentioned.
+This task asks for a gap between architecture intent and real behavior. I found it in the `decode()` function inside
+`src/abctokz/tokenizer.py` as mentioned.
 
 ### Intended Design (what the abstraction promises)
 
@@ -1027,13 +1033,15 @@ tokens = [
 ]
 ```
 
-That second condition means: **drop every token that looks like `<...>`**, even when it is not configured as a special token.
+That second condition means: **drop every token that looks like `<...>`**, even when it is not configured as a special
+token.
 
 So the implementation silently enforces an undocumented heuristic that is broader than the stated API contract.
 
 ### Concrete Reproduction
 
-I wrote and ran `examples/task12_decode_gap.py` with a WordLevel tokenizer trained on normal text containing a literal token `<div>`.
+I wrote and ran `examples/task12_decode_gap.py` with a WordLevel tokenizer trained on normal text containing a literal
+token `<div>`.
 
 Run command:
 
@@ -1070,7 +1078,8 @@ The architecture appears clean, but behavior is broader and unsafe.
 
 In `decode()`, remove the heuristic branch `(t.startswith("<") and t.endswith(">"))`.
 
-Only skip tokens that are actually in `self._special_tokens` (or were injected by the configured post-processor). That aligns runtime behavior with the API promise while keeping the change minimal and low risk.
+Only skip tokens that are actually in `self._special_tokens` (or were injected by the configured post-processor). That
+aligns runtime behavior with the API promise while keeping the change minimal and low risk.
 
 So the gap is: **"skip special tokens" abstraction vs "skip all angle-bracket tokens" implementation**.
 
@@ -1079,50 +1088,75 @@ So the gap is: **"skip special tokens" abstraction vs "skip all angle-bracket to
 ## Task 13 — Predict, Then Verify
 
 ***Background:***
-I wanted to test the "butterfly effect" of the NLP pipeline. I decided to mess with the pre-tokenizer to see how early data sanitization affects the mathematical model. 
+I wanted to test the "butterfly effect" of the NLP pipeline. I decided to mess with the pre-tokenizer to see how early
+data sanitization affects the mathematical model.
 
-**The Proposed Change:** I chose to modify the default `bpe_multilingual` config by **removing the Punctuation Pre-tokenizer**. Normally, the pipeline runs whitespace → punctuation → devanagari_aware. I wanted to see what happens if I force the model to look at strings where the punctuation is permanently glued to the words (e.g., `"Hello,"` instead of `"Hello"` and `","`).
+**The Proposed Change:** I chose to modify the default `bpe_multilingual` config by **removing the Punctuation
+Pre-tokenizer**. Normally, the pipeline runs whitespace → punctuation → devanagari_aware. I wanted to see what happens
+if I force the model to look at strings where the punctuation is permanently glued to the words (e.g., `"Hello,"`
+instead of `"Hello"` and `","`).
 
 ### 1. My Predictions (Wrote Before Running)
 
- **Which tests would fail?** I predicted `tests/golden/test_golden_outputs.py` would instantly crash. Golden tests are regression tests. Because I am changing how words are grouped before they even reach the BPE model, the final token boundaries and Integer IDs will be completely different.
+**Which tests would fail?** I predicted `tests/golden/test_golden_outputs.py` would instantly crash. Golden tests are
+regression tests. Because I am changing how words are grouped before they even reach the BPE model, the final token
+boundaries and Integer IDs will be completely different.
 
- **Which metrics would change?** I predicted **Fertility** would get significantly worse (increase). BPE has a strict memory budget. If I glue punctuation to words, the model has to waste dictionary slots learning `"world"`, `"world,"`, and `"world!"` as three separate words. It will run out of space, panic, and shatter words into base characters to survive.
+**Which metrics would change?** I predicted **Fertility** would get significantly worse (increase). BPE has a strict
+memory budget. If I glue punctuation to words, the model has to waste dictionary slots learning `"world"`, `"world,"`,
+and `"world!"` as three separate words. It will run out of space, panic, and shatter words into base characters to
+survive.
 
- **Which parts would be unaffected?** The core logic engines (`src/abctokz/models/bpe.py`) and the `Decoder`. The BPE model is pure math—it doesn't know what a comma is; it just processes whatever array it is handed.
+**Which parts would be unaffected?** The core logic engines (`src/abctokz/models/bpe.py`) and the `Decoder`. The BPE
+model is pure math—it doesn't know what a comma is; it just processes whatever array it is handed.
 
 ### 2. The Actual Result (The Verification)
 
-I wrote a script (`experiments/test_prediction.py`) to run the default config side-by-side with my mutated config on a tiny 100-word vocabulary. 
+I wrote a script (`experiments/test_prediction.py`) to run the default config side-by-side with my mutated config on a
+tiny 100-word vocabulary.
 
 *(Here is the screenshot of the experiment output):*
 
 ![Prediction Output](/public/images/experiment_prediction.png)
 
 **What actually happened:**
-1. **The Architecture is strong:** Before the script even ran, it crashed with a pydantic_core.ValidationError: Instance is frozen. The architects built the config system using Pydantic's `frozen=True`. I couldn't just mutate `cfg.pretokenizer.type` on the fly. I had to dump the config to a dictionary and rebuild it from scratch. This is a brilliant safety guard against accidental runtime mutations, which I appreciate much!
-2. **Fertility stayed the same:** As predicted, Fertility skyrocketed from **4.78** (Baseline) to **4.78**. 
-3. **The Token Carnage:** The baseline tokenizer beautifully output `['Hello', ',', 'world', '!']`. The mutated tokenizer completely lost its mind and output `['H', '##el', '##lo', '##,', 'world', '##!']`. 
+
+1. **The Architecture is strong:** Before the script even ran, it crashed with a pydantic_core.ValidationError: Instance
+   is frozen. The architects built the config system using Pydantic's `frozen=True`. I couldn't just mutate
+   `cfg.pretokenizer.type` on the fly. I had to dump the config to a dictionary and rebuild it from scratch. This is a
+   brilliant safety guard against accidental runtime mutations, which I appreciate much!
+2. **Fertility stayed the same:** As predicted, Fertility skyrocketed from **4.78** (Baseline) to **4.78**.
+3. **The Token Carnage:** The baseline tokenizer beautifully output `['Hello', ',', 'world', '!']`. The mutated
+   tokenizer completely lost its mind and output `['H', '##el', '##lo', '##,', 'world', '##!']`.
 
 ### 3. What Surprised Me / What it Revealed
 
-The biggest surprise was the **Round-Trip Success Rate**. 
+The biggest surprise was the **Round-Trip Success Rate**.
 
-Despite the model completely butchering the tokenization (chopping `"Hello,"` into four horrific sub-character pieces), the Round-Trip Success Rate stayed at exactly **100.0%**. 
+Despite the model completely butchering the tokenization (chopping `"Hello,"` into four horrific sub-character pieces),
+the Round-Trip Success Rate stayed at exactly **100.0%**.
 
 **What this reveals about the codebase:**
 
- It proves that the separation of concerns between the `Model` and the `Decoder` is structurally flawless. The `SubwordDecoder` doesn't care how badly the BPE model fragmented the word, nor does it care that a comma was glued to a letter. It blindly strips the `##` prefixes and glues the string back together. It proves the system is mathematically lossless even when the tokenization logic is terribly inefficient.
-
+It proves that the separation of concerns between the `Model` and the `Decoder` is structurally flawless. The
+`SubwordDecoder` doesn't care how badly the BPE model fragmented the word, nor does it care that a comma was glued to a
+letter. It blindly strips the `##` prefixes and glues the string back together. It proves the system is mathematically
+lossless even when the tokenization logic is terribly inefficient.
 
 ## Task 14 — How Hard Would It Be to Add a Fourth Model?
 
-When I first read this task, I immediately jumped to `src/abctokz/models/base.py` and `src/abctokz/trainers/base.py` to figure out exactly what kind of "contract" a new model would need to sign. I wanted to see how deeply embedded the models were into the rest of the architecture. 
+When I first read this task, I immediately jumped to `src/abctokz/models/base.py` and `src/abctokz/trainers/base.py` to
+figure out exactly what kind of "contract" a new model would need to sign. I wanted to see how deeply embedded the
+models were into the rest of the architecture.
 
-What I found was surprisingly elegant, but with a few hidden traps. Here is my exact plan if I were to add Google's **WordPiece** model to this library.
+What I found was surprisingly elegant, but with a few hidden traps. Here is my exact plan if I were to add Google's *
+*WordPiece** model to this library.
 
 ### 1. The Easy Part: What I would leave completely untouched
-The designers of the repo did a good job of decoupling the pipeline. I wouldn't have to touch **any** of these directories:
+
+The designers of the repo did a good job of decoupling the pipeline. I wouldn't have to touch **any** of these
+directories:
+
 * `src/abctokz/normalizers/`
 * `src/abctokz/pretokenizers/`
 * `src/abctokz/decoders/`
@@ -1130,35 +1164,43 @@ The designers of the repo did a good job of decoupling the pipeline. I wouldn't 
 
 **Why?**
 
- The core orchestrator (`tokenizer.py`) handles all the routing. By the time the text actually reaches the mathematical model, it has already been normalized and split into isolated words.
- 
-Furthermore, as long as my new WordPiece model outputs standard `##` prefixes for subwords, the existing `SubwordDecoder` will automatically know how to glue them back together.
+The core orchestrator (`tokenizer.py`) handles all the routing. By the time the text actually reaches the mathematical
+model, it has already been normalized and split into isolated words.
+
+Furthermore, as long as my new WordPiece model outputs standard `##` prefixes for subwords, the existing
+`SubwordDecoder` will automatically know how to glue them back together.
 
 ### 2. What I would need to create from scratch
+
 I would need to create exactly two new files to satisfy the abstract base classes:
 
 1. **`src/abctokz/models/wordpiece.py`** (The Execution Engine)
 2. **`src/abctokz/trainers/wordpiece_trainer.py`** (The Learning Engine)
 
-Looking at the `Model` abstract base class, the extension point is incredibly narrow and highly developer-friendly, a very good design there.:
+Looking at the `Model` abstract base class, the extension point is incredibly narrow and highly developer-friendly, a
+very good design there.:
 
 ```python
     @abstractmethod
-    def tokenize(self, sequence: str) -> list[tuple[str, int]]:
-        """Tokenize a single *sequence* (pre-token) into ``(token, id)`` pairs."""
+def tokenize(self, sequence: str) -> list[tuple[str, int]]:
+    """Tokenize a single *sequence* (pre-token) into ``(token, id)`` pairs."""
 ```
 
-The architecture makes extension easy right here. Because sequence is just a single pre-token string, my new WordPiece model doesn't need to loop through sentences, handle whitespace, or worry about punctuation. It just needs to apply its math to that single word and return the (token, id) tuples.
+The architecture makes extension easy right here. Because sequence is just a single pre-token string, my new WordPiece
+model doesn't need to loop through sentences, handle whitespace, or worry about punctuation. It just needs to apply its
+math to that single word and return the (token, id) tuples.
 
 Similarly, the `Trainer` base class just asks for one thing:
 
 ```python
 @abstractmethod
-    def train(self, corpus: Iterator[str]) -> Model:
-        """Train a model from *corpus*."""
-```
-It takes a raw text generator and gives out a compiled Model artifact.
 
+
+def train(self, corpus: Iterator[str]) -> Model:
+    """Train a model from *corpus*."""
+```
+
+It takes a raw text generator and gives out a compiled Model artifact.
 
 ### 3. **What I would need to modify - the hard part**
 
@@ -1166,19 +1208,82 @@ To actually wire the new model into the system, I'd have to edit the routing fil
 
 `src/abctokz/models/__init__.py` & `trainers/__init__.py`: To expose the new classes.
 
-`src/abctokz/config/defaults.py`: To add a new wordpiece_multilingual() helper function so users can easily spawn a config.
+`src/abctokz/config/defaults.py`: To add a new wordpiece_multilingual() helper function so users can easily spawn a
+config.
 
-`src/abctokz/tokenizer.py`: I'd have to update the from_config() and load() methods. Right now, there are likely if/elif statements checking if model_type == "bpe": ... that route the config to the correct class instantiation. I'd have to add my WordPiece branch there.
+`src/abctokz/tokenizer.py`: I'd have to update the from_config() and load() methods. Right now, there are likely if/elif
+statements checking if model_type == "bpe": ... that route the config to the correct class instantiation. I'd have to
+add my WordPiece branch there.
 
 ### 4. The Single Biggest Obstacle
 
 While the object-oriented logic is easy, the Pydantic configuration schemas would be an absolute nightmare.
 
-We saw this exact issue in Task 13! The architecture uses deeply nested, strictly validated, and dynamically frozen Pydantic models in src/abctokz/config/schemas.py.
+We saw this exact issue in Task 13! The architecture uses deeply nested, strictly validated, and dynamically frozen
+Pydantic models in src/abctokz/config/schemas.py.
 
 **The architecture gets in the way**
 
-To add WordPiece, I couldn't just pass a `"wordpiece"` string. I would have to carefully construct a new `WordPieceConfig` class, strictly define all its hyperparameters (like `max_input_chars_per_word` or `unk_token`), and then successfully inject that new type into the massive Union type that validates the master TokenizerConfig.
+To add WordPiece, I couldn't just pass a `"wordpiece"` string. I would have to carefully construct a new
+`WordPieceConfig` class, strictly define all its hyperparameters (like `max_input_chars_per_word` or `unk_token`), and
+then successfully inject that new type into the massive Union type that validates the master TokenizerConfig.
+
+### TASK 15 - Find Something That Breaks
+
+Task 15: Edge Case Analysis – Silent Erasure of <unk> Characters
+
+Edge Case: Emojis and rare characters are silently erased during decoding instead of being preserved as <unk> tokens.
+
+1. Reproduction Steps
+
+    ```
+    text = "hello 🤔 world"
+    encoding = tokenizer.encode(text)
+    decoded = tokenizer.decode(encoding.ids)
+   ```
+
+2. Observed vs. Expected Behavior
+
+   Expected: The output should retain a placeholder for the missing data, rendering as "hello <unk> world".
+
+   Observed: The unknown character (and potentially surrounding unknown characters) is completely dropped, resulting in
+   merged outputs and silent data loss.
+
+
+3. Classification and Reasoning
+
+   Classification: Bug / Incorrect Behavior
+
+   Reasoning: The issue originates from the aggressive filtering logic in tokenizer.py (decode() method). By default,
+   skip_special_tokens=True strips any token matching the <...> regex pattern. While skipping control tokens like <pad>
+   or <eos> is correct, stripping the <unk> token violates standard tokenization contracts. An <unk> token represents a
+   real loss of lexical information at a specific index; silently erasing it destroys sequence boundaries and spatial
+   awareness of out-of-vocabulary elements.
+
+
+4. Minimal Fix / Workaround
+
+    Workaround:
+    Override the default flag when calling the decode method:
+    
+    ```aiignore
+    decoded = tokenizer.decode(encoding.ids, skip_special_tokens=False)
+    ```
+    
+    Minimal Codebase Fix:
+    In src/abctokz/tokenizer.py around line 186, modify the list comprehension to explicitly protect the <unk> token from
+    being aggressively stripped:
+
+    ```
+       # Inside the decode() method
+    unk = self.id_to_token(self._model.get_vocab().get(self._model._unk_token, 0))
+    
+    tokens = [
+        t for t in tokens
+        if t and (t == unk or not (t in special_strs or (t.startswith("<") and t.endswith(">"))))
+    ]
+   ```
+   
 
 ## Task 16 — Is This Ready for Production?
 
