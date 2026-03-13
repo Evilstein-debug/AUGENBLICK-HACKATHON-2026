@@ -697,3 +697,52 @@ Crucially, by explicitly designing the function to accept normalized_originals a
 **What it does NOT measure:**
 Because it uses a strict check, it is a **binary pass/fail**. If a 5,000-word document successfully round-trips but loses a single comma, this metric scores it as a complete 0 for that document. It doesn't measure character-level error rates to tell you how broken the string is.
 
+---
+
+## Task 10 — The Compression Trade-off
+
+For this task I changed one configuration axis: **model family** while keeping corpus and vocabulary the same.
+
+- Config A: `bpe_multilingual(vocab_size=200)`
+- Config B: `wordlevel_multilingual(vocab_size=200)`
+
+I used the same training corpus for both and evaluated on the same mixed set (English, Devanagari, rare OOV words, emoji). Reproducible script: `examples/task10_tradeoff.py`.
+
+Run command:
+
+```bash
+.venv/bin/python examples/task10_tradeoff.py
+```
+
+### Measured results
+
+| Configuration | Fertility (lower is better) | UNK rate (lower is better) | Mean tokens/sentence |
+|---|---:|---:|---:|
+| BPE (vocab_size=200) | 4.000 | 0.071 | 16.800 |
+| WordLevel (vocab_size=200) | 1.000 | 0.143 | 4.200 |
+
+### What improved and what got worse?
+
+- **Improved:** WordLevel compresses much more aggressively (fertility 1.000 vs 4.000).
+- **Got worse:** WordLevel is less optimized for unseen text (`unk_rate` doubled: 0.143 vs 0.071).
+
+Concrete evidence from the same run:
+
+- For `xylophonically quantumflux`, WordLevel outputs `['<unk>', '<unk>']`, while BPE still decomposes into many known subpieces and only some unknown IDs.
+- For `hello 😀 world`, both models hit unknown on emoji, but WordLevel loses whole-token resolution much faster on unseen words.
+
+### Is this a real trade-off or does one config dominate?
+
+This is a **real trade-off**:
+
+- If you optimize for compression and small sequence length, WordLevel wins.
+- If you optimize for open-vocabulary robustness (fewer unknowns in noisy production text), BPE wins.
+
+Neither dominates across both goals.
+
+### Would I make this change in production?
+
+I would **not** switch from BPE to WordLevel for multilingual production ingestion.
+
+Reason: lower fertility from WordLevel looks attractive, but higher unknown rate is riskier for real world tasks, especially for long spellings, names, transliteration drift, and user-generated text. For most real pipelines, predictable coverage is more valuable than maximal compression.
+
