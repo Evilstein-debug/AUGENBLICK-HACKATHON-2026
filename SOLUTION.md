@@ -1,7 +1,7 @@
 # Solutions to Tasks
 
 
-### Task 2 — Who Does What? Mapping Module Responsibilities
+## Task 2 — Who Does What? Mapping Module Responsibilities
 
 **1. Module Responsibility Mapping**
 * **Training a tokenizer (learning vocabulary from text):** Handled by `src/abctokz/trainers/` (e.g., bpe_trainer.py, unigram_trainer.py).
@@ -28,3 +28,34 @@ The boundary feels highly blurry within **`src/abctokz/tokenizer.py`**, specific
 
 **What I would do about it:**
 Instead of creating brand new folders, I would stick to the current setup and move this saving logic into the existing `src/abctokz/vocab/serialization.py` file, or add it to the helpers in `src/abctokz/utils/io.py`. The AugenblickTokenizer shouldn't have to care about how files are saved to the hard drive. It should just pass the data to an external save function instead of building the JSON files manually.
+
+---
+
+## Task 5 — Is It Truly Deterministic?
+
+When training tokenizers, the output must be perfectly repeatable. We ran an experiment (`experiments/determinism_bpe.py`) to prove that training `abctokz` twice on the exact same data produces identical results. 
+
+### What IS Deterministic?
+
+Our test confirmed the following outputs are **100% identical** across runs:
+
+* **Vocabulary Order (`vocab.json`):** Both files were byte-for-byte matches (2529 chars). The code explicitly sorts ties alphabetically, preventing random ordering.
+* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every time (2231 chars).
+* **Token Outputs:** Encoding the same text through both tokenizers produced the exact same token strings and ID numbers.
+
+*(See the [attached screenshot](/public//images/experiment_bpe.png) for the terminal output showing matching arrays and exact file comparisons).*
+
+### What is NOT Deterministic
+
+While the final model files are identical, the training process varies:
+
+* **Training Time:** As seen in our logs, Run 1 took 0.0913 seconds, while Run 2 took 0.0099 seconds. 
+
+This happens because of the operating system's background tasks, CPU caching, and thermal throttling. It is **completely normal** and doesn't affect the final tokenizer artifacts.
+
+### Remaining Risks
+
+Even with solid code, determinism can fail under these specific edge cases:
+
+1. **Different Computers (CPU/OS):** Unigram models use decimal math (`math.log`). Different processors (like an ARM Mac vs. an Intel PC) might round very long decimals differently, which could change tie-breaker results.
+2. **Future Multi-threading:** If a developer updates the code to load data in parallel (multiple threads at once) without strictly ordering the results, the training data will mix randomly and break determinism.
