@@ -139,7 +139,16 @@ appending "##" and its unique id for every token.
 
 5. How were those pieces turned back into a string during decode()?
 
-yet to do
+   decode in tokenizer.py
+   first inverts the model's vocabulary from `{token → id}` to `{id → token}`, then maps each integer ID in the input
+   list back to its token string (unknown IDs become `""`). If `skip_special_tokens=True`, it filters out any tokens
+   like `<bos>` or `<eos>`. The resulting list of token strings is then handed off to `self._decoder.decode(tokens)` —
+   either SubwordDecoder (
+   which strips `##` / `▁` prefixes and calls `"".join()`) or word decoder
+   which just does `" ".join()`) — where the actual reassembly into a single string happens.
+
+   this decode() is a bit buggy where it ignores any emojis/special characters or any <unk> token, we have spoken about
+   this in further detail in the upcoming tasks
 
 ---
 
@@ -1194,6 +1203,8 @@ very good design there.:
 
 ```python
     @abstractmethod
+
+
 def tokenize(self, sequence: str) -> list[tuple[str, int]]:
     """Tokenize a single *sequence* (pre-token) into ``(token, id)`` pairs."""
 ```
@@ -1206,8 +1217,6 @@ Similarly, the `Trainer` base class just asks for one thing:
 
 ```python
 @abstractmethod
-
-
 def train(self, corpus: Iterator[str]) -> Model:
     """Train a model from *corpus*."""
 ```
@@ -1277,16 +1286,16 @@ Edge Case: Emojis and rare characters are silently erased during decoding instea
 
 4. Minimal Fix / Workaround
 
-    Workaround:
-    Override the default flag when calling the decode method:
-    
+   Workaround:
+   Override the default flag when calling the decode method:
+
     ```aiignore
     decoded = tokenizer.decode(encoding.ids, skip_special_tokens=False)
     ```
-    
-    Minimal Codebase Fix:
-    In src/abctokz/tokenizer.py around line 186, modify the list comprehension to explicitly protect the <unk> token from
-    being aggressively stripped:
+
+   Minimal Codebase Fix:
+   In src/abctokz/tokenizer.py around line 186, modify the list comprehension to explicitly protect the <unk> token from
+   being aggressively stripped:
 
     ```
        # Inside the decode() method
@@ -1304,21 +1313,28 @@ Edge Case: Emojis and rare characters are silently erased during decoding instea
 
 ***Background:***
 
-Spent quite some time digging through the whole architecture to see if this can actually scale. Treating this like a real code review for a system that needs to process millions of docs.
+Spent quite some time digging through the whole architecture to see if this can actually scale. Treating this like a
+real code review for a system that needs to process millions of docs.
 
 ***Understanding the context:***
 
-If someone told me to push this to production tomorrow for a massive text pipeline, i would definitely ask for a pause. It is a beautiful architecture for what it is, but it has some deep structural bottlenecks.
+If someone told me to push this to production tomorrow for a massive text pipeline, i would definitely ask for a pause.
+It is a beautiful architecture for what it is, but it has some deep structural bottlenecks.
 
 Here is my honest audit based on the codebase.
 
 ### 1. *Three specific reasons you'd feel confident deploying it*
 
-First off, the Devanagari support is actually native, not just an afterthought. they specifically built a `devanagari.py` normalizer and a `devanagari_aware.py` pre-tokenizer. so for handling Hindi/Marathi documents, the linguistic quality is solid.
+First off, the Devanagari support is actually native, not just an afterthought. they specifically built a
+`devanagari.py` normalizer and a `devanagari_aware.py` pre-tokenizer. so for handling Hindi/Marathi documents, the
+linguistic quality is solid.
 
-Second, the configuration state is bulletproof. they used **Pydantic schemas** that are frozen. This means you won't get weird runtime state mutations where some middleware accidentally changes the config.
+Second, the configuration state is bulletproof. they used **Pydantic schemas** that are frozen. This means you won't get
+weird runtime state mutations where some middleware accidentally changes the config.
 
-Third, the architecture isolates heavy dependencies. The heavy stuff like huggingface or sentencepiece is locked inside the `adapters` folder. So we can deploy the core engine as a lightweight microservice without downloading gigabytes of external ML bloatware.
+Third, the architecture isolates heavy dependencies. The heavy stuff like huggingface or sentencepiece is locked inside
+the `adapters` folder. So we can deploy the core engine as a lightweight microservice without downloading gigabytes of
+external ML bloatware.
 
 ### 2. *Three specific reasons you'd be hesitant — concrete gaps*
 
@@ -1326,59 +1342,71 @@ The first major gap is that the BPE algorithm has an O(N²) time complexity.
 
 ```python
     def _apply_merges(self, pieces: list[str]) -> list[str]:
-        while len(pieces) > 1:
-            best_rank: int | None = None
-            best_idx = -1
 
-            for i in range(len(pieces) - 1):
-                pair = (pieces[i], pieces[i + 1])
-                rank = self._merges.get_rank(pair)
-                if rank is not None and (best_rank is None or rank < best_rank):
-                    best_rank = rank
-                    best_idx = i
 
-            if best_idx == -1:
-                break
+    while len(pieces) > 1:
+        best_rank: int | None = None
+        best_idx = -1
+
+        for i in range(len(pieces) - 1):
+            pair = (pieces[i], pieces[i + 1])
+            rank = self._merges.get_rank(pair)
+            if rank is not None and (best_rank is None or rank < best_rank):
+                best_rank = rank
+                best_idx = i
+
+        if best_idx == -1:
+            break
 ```
 
-For every single merge, it rescans the entire array of remaining pieces inside a loop. For long, agglomerated Hindi words, this quadratic scaling will completely choke the CPU.
+For every single merge, it rescans the entire array of remaining pieces inside a loop. For long, agglomerated Hindi
+words, this quadratic scaling will completely choke the CPU.
 
 The second gap is the **single-threaded file I/O** during training.
 
 ```python
         def _corpus_iter():
-            for path in corpus_paths:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if normalizer:
-                            line = normalizer.normalize(line)
-                        if pretokenizer:
-                            line = " ".join(pretokenizer.pre_tokenize(line))
-                        yield line
+
+
+for path in corpus_paths:
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            if normalizer:
+                line = normalizer.normalize(line)
+            if pretokenizer:
+                line = " ".join(pretokenizer.pre_tokenize(line))
+            yield line
 ```
 
-It reads files sequentially, line-by-line, on a single thread. processing millions of documents will bottleneck hard on disk I/O because it doesn't use multiprocessing.
+It reads files sequentially, line-by-line, on a single thread. processing millions of documents will bottleneck hard on
+disk I/O because it doesn't use multiprocessing.
 
 The third gap is local-only storage coupling.
 
 ```python
     def save(self, path: str) -> None:
-        out = ensure_dir(path)
-        self._model.save(str(out))
+
+
+    out = ensure_dir(path)
+self._model.save(str(out))
 ```
 
-the save function in the orchestrator is hardcoded to use local POSIX paths with things like `ensure_dir`. In a real production system, we need to save artifacts directly to cloud storage like AWS S3.
+the save function in the orchestrator is hardcoded to use local POSIX paths with things like `ensure_dir`. In a real
+production system, we need to save artifacts directly to cloud storage like AWS S3.
 
 ### 3. *If you had to rank the gaps by urgency, what's the most important thing to fix first?*
 
-**1st priority**: The O(N²) BPE loop. we cannot process millions of documents if the core mathematical engine fundamentally scales quadratically. We need to refactor it to use a priority queue.
+**1st priority**: The O(N²) BPE loop. we cannot process millions of documents if the core mathematical engine
+fundamentally scales quadratically. We need to refactor it to use a priority queue.
 
-**2nd priority**: The single-threaded I/O. We need to rewrite `_corpus_iter` using Python's multiprocessing to read files in parallel chunks.
+**2nd priority**: The single-threaded I/O. We need to rewrite `_corpus_iter` using Python's multiprocessing to read
+files in parallel chunks.
 
-**3rd priority**: Local-only storage. We can temporarily bypass this by saving to a local docker volume and uploading it via an external bash script, so it's the least urgent.
+**3rd priority**: Local-only storage. We can temporarily bypass this by saving to a local docker volume and uploading it
+via an external bash script, so it's the least urgent.
 
 ---
 
@@ -1388,7 +1416,8 @@ For Task 17, I fixed a real behavior bug discovered in Task 12.
 
 ### Problem statement
 
-The `decode()` API says `skip_special_tokens=True` should skip special tokens. But the implementation also dropped *any* token that looked like `<...>` even when it was not configured as special.
+The `decode()` API says `skip_special_tokens=True` should skip special tokens. But the implementation also dropped *any*
+token that looked like `<...>` even when it was not configured as special.
 
 That means normal text like `hello <div> world` could lose `<div>` during decode, which is silent data loss.
 
@@ -1470,11 +1499,14 @@ Before the fix, `decoded_default` was `'hello world'` and round-trip success was
 The fix touches **exactly one line in one file**: line 188 of `src/abctokz/tokenizer.py`.
 
 Every other file in the repository is completely untouched:
-- No changes to `models/`, `trainers/`, `normalizers/`, `pretokenizers/`, `decoders/`, `vocab/`, `adapters/`, `eval/`, `config/`, or `cli/`.
+
+- No changes to `models/`, `trainers/`, `normalizers/`, `pretokenizers/`, `decoders/`, `vocab/`, `adapters/`, `eval/`,
+  `config/`, or `cli/`.
 - No API signature changes — `decode(ids, skip_special_tokens=True)` has the same parameters and return type.
 - No serialization format changes — saved tokenizer artifacts on disk remain fully compatible.
 
-The only addition is one focused regression test in the existing integration test file, which is standard practice after any behavior fix.
+The only addition is one focused regression test in the existing integration test file, which is standard practice after
+any behavior fix.
 
 ### What is the risk of the change?
 
@@ -1489,10 +1521,12 @@ if t and t not in special_strs
 ```
 
 The only way the new code behaves differently from the old code is when a token:
+
 1. starts with `<` and ends with `>`, **and**
 2. is NOT in `self._special_tokens`
 
-In that exact situation, the old code dropped the token silently; the new code keeps it. That is exactly the correction we want and no user who was relying on the old broken behavior would have considered it correct.
+In that exact situation, the old code dropped the token silently; the new code keeps it. That is exactly the correction
+we want and no user who was relying on the old broken behavior would have considered it correct.
 
 The regression test makes the fix verifiable:
 
@@ -1503,38 +1537,72 @@ The regression test makes the fix verifiable:
 
 ### Who benefits and how?
 
-Any user whose corpus contains HTML/XML markup, template placeholders, or custom angle-bracket tokens (e.g., `<unused0>`, `<mask>`, `<extra_id_0>`, `<div>`, `<br/>`) now gets lossless round-trips through `decode()`, which is what the function contract promises.
+Any user whose corpus contains HTML/XML markup, template placeholders, or custom angle-bracket tokens (e.g.,
+`<unused0>`, `<mask>`, `<extra_id_0>`, `<div>`, `<br/>`) now gets lossless round-trips through `decode()`, which is what
+the function contract promises.
 
-This also makes `round_trip_success_rate` (from `src/abctokz/eval/metrics.py`) a meaningful metric again for such corpora. Before the fix, it could silently report `round_trip_success_rate` as `0.000` for a tokenizer that was otherwise working perfectly just because it skipped corpus containing angle brackets.
+This also makes `round_trip_success_rate` (from `src/abctokz/eval/metrics.py`) a meaningful metric again for such
+corpora. Before the fix, it could silently report `round_trip_success_rate` as `0.000` for a tokenizer that was
+otherwise working perfectly just because it skipped corpus containing angle brackets.
 
 ### What is the bigger refactor that would be wrong to do now?
 
-The architecturally "cleaner" change would be to move special-token filtering entirely inside the decoder layer (i.e., into `src/abctokz/decoders/base.py` or into `SubwordDecoder`/`WordDecoder`). The argument would be: the decoder is the component that reconstructs strings from tokens, so deciding which tokens to omit is naturally its responsibility, not the orchestrator's.
+The architecturally "cleaner" change would be to move special-token filtering entirely inside the decoder layer (i.e.,
+into `src/abctokz/decoders/base.py` or into `SubwordDecoder`/`WordDecoder`). The argument would be: the decoder is the
+component that reconstructs strings from tokens, so deciding which tokens to omit is naturally its responsibility, not
+the orchestrator's.
 
 That refactor is **wrong to do here** for three reasons:
 
-1. **Width of change:** It would require modifying `base.py`, both concrete decoder subclasses, and their unit tests in `tests/unit/test_decoders.py`. That is at least 3–4 files changed instead of 1.
+1. **Width of change:** It would require modifying `base.py`, both concrete decoder subclasses, and their unit tests in
+   `tests/unit/test_decoders.py`. That is at least 3–4 files changed instead of 1.
 
-2. **Impact radius:** The decoder interface is used not just by `tokenizer.py` but potentially by any future adapter (see `src/abctokz/adapters/`). Changing its contract mid-project risks silent behavioral regressions in code paths that were not under test for this specific scenario.
+2. **Impact radius:** The decoder interface is used not just by `tokenizer.py` but potentially by any future adapter (
+   see `src/abctokz/adapters/`). Changing its contract mid-project risks silent behavioral regressions in code paths
+   that were not under test for this specific scenario.
 
-3. **The bug is shallow:** The root cause was purely a one-line logic error in a single filter expression. A large refactor to fix a one-line bug is not sensible, the fix should be as small as the cause.
+3. **The bug is shallow:** The root cause was purely a one-line logic error in a single filter expression. A large
+   refactor to fix a one-line bug is not sensible, the fix should be as small as the cause.
 
 ---
 
 ## Task 20 — Explain Tokenization to Someone Who Doesn't Know
 
-All these language models are really good at one thing and that's predicting the next word. To achieve this, tokenization is used. In tokenization we basically create chunks of text with different strategies, and each chunk is assigned a number which is called a token. These chunks could be formed from a given text by grouping it in any shape or form depending on the strategy used. Now you might think wonder: why is it required? Why can’t a model just read text the way humans do?
+All these language models are really good at one thing and that's predicting the next word. To achieve this,
+tokenization is used. In tokenization we basically create chunks of text with different strategies, and each chunk is
+assigned a number which is called a token. These chunks could be formed from a given text by grouping it in any shape or
+form depending on the strategy used. Now you might think wonder: why is it required? Why can’t a model just read text
+the way humans do?
 
-The reason is that computers don’t actually understand characters or words directly. They work with numbers. Tokenization acts as the bridge between human language and numerical computation. It converts messy, irregular text into a structured sequence of tokens that a model can process efficiently.
+The reason is that computers don’t actually understand characters or words directly. They work with numbers.
+Tokenization acts as the bridge between human language and numerical computation. It converts messy, irregular text into
+a structured sequence of tokens that a model can process efficiently.
 
-At first glance, this might sound simple, just split text by spaces and you’re done. But real language is far more complicated than that. Words can appear in many forms, punctuation behaves differently across contexts, and new or rare words appear all the time. For example, if a tokenizer only knows the word “play” but encounters “playfulness”, it needs a strategy to break it into meaningful pieces instead of marking the whole word as unknown.
+At first glance, this might sound simple, just split text by spaces and you’re done. But real language is far more
+complicated than that. Words can appear in many forms, punctuation behaves differently across contexts, and new or rare
+words appear all the time. For example, if a tokenizer only knows the word “play” but encounters “playfulness”, it needs
+a strategy to break it into meaningful pieces instead of marking the whole word as unknown.
 
-The naive approach is `text.split()`: split on spaces, get words, assign each word a number. It works fine until you meet a word the system has never seen. Say someone types `"xylophonically"`. The model has no number for it, so it gets a special "I don't know" marker — `<unk>` — and any meaning in that word evaporates.
+The naive approach is `text.split()`: split on spaces, get words, assign each word a number. It works fine until you
+meet a word the system has never seen. Say someone types `"xylophonically"`. The model has no number for it, so it gets
+a special "I don't know" marker — `<unk>` — and any meaning in that word evaporates.
 
-Smarter methods break words into *pieces* instead. The **BPE** algorithm, used by GPT-4 and many others, starts with individual characters and repeatedly merges the most common pairs. After enough merges, common words become single tokens (`"hello"` → `[hello]`) while rare words fall back to short pieces (`"xylophonically"` → `["x", "y", "l", "o", …]`). This drastically reduces unknowns without needing a vocabulary of every word in every language.
+Smarter methods break words into *pieces* instead. The **BPE** algorithm, used by GPT-4 and many others, starts with
+individual characters and repeatedly merges the most common pairs. After enough merges, common words become single
+tokens (`"hello"` → `[hello]`) while rare words fall back to short pieces (`"xylophonically"` →
+`["x", "y", "l", "o", …]`). This drastically reduces unknowns without needing a vocabulary of every word in every
+language.
 
-**Here's where multilingual gets really interesting.** Every popular tokenizer was trained on text from the internet, which is overwhelmingly English. When we ran the Indian national anthem through GPT-4's tokenizer, we got a **fertility of 4.9** (fertility = number_of_tokes / number_of_whitespace_words, lesser fertility is better) for the Devanagari version — nearly 5 tokens per word, because GPT-4 has almost no merged Devanagari pieces and treats each consonant as its own token. The same text through `abctokz`, trained specifically on Hindi and Marathi, came out at **2.4** — roughly half the token count for the same meaning. Fewer tokens means cheaper inference and less wasted context window.
+**Here's where multilingual gets really interesting.** Every popular tokenizer was trained on text from the internet,
+which is overwhelmingly English. When we ran the Indian national anthem through GPT-4's tokenizer, we got a **fertility
+of 4.9** (fertility = number_of_tokes / number_of_whitespace_words, lesser fertility is better) for the Devanagari
+version — nearly 5 tokens per word, because GPT-4 has almost no merged Devanagari pieces and treats each consonant as
+its own token. The same text through `abctokz`, trained specifically on Hindi and Marathi, came out at **2.4** — roughly
+half the token count for the same meaning. Fewer tokens means cheaper inference and less wasted context window.
 
-There's also an invisible correctness problem. When we decoded tokens back into text, any token shaped like `<div>` was silently dropped — because the decoder mistook it for a special system token. The text looked fine until you measured it. Tokenization mistakes like this don't throw errors; they just corrupt your data quietly.
+There's also an invisible correctness problem. When we decoded tokens back into text, any token shaped like `<div>` was
+silently dropped — because the decoder mistook it for a special system token. The text looked fine until you measured
+it. Tokenization mistakes like this don't throw errors; they just corrupt your data quietly.
 
-In practice, tokenization quietly shapes everything a language model can understand because the model never sees the words, it only sees the tokens the tokenizer chooses to represent those words.
+In practice, tokenization quietly shapes everything a language model can understand because the model never sees the
+words, it only sees the tokens the tokenizer chooses to represent those words.
