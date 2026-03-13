@@ -714,6 +714,12 @@ Run command:
 .venv/bin/python examples/task10_tradeoff.py
 ```
 
+### Output Screenshot
+
+This is the output for the examples/task10_tradeoff.py script. It is clearly visible from this execution that after keeping the vocab size and the sample input same, we get vastly different results when we change the models. Less token fertility and less number of tokens isn't always better especially in real world pipelines where accuracy matters more.
+
+![OUTPUT SCREENSHOT](/public/images/task10_tradeoff.png)
+
 ### Measured results
 
 | Configuration | Fertility (lower is better) | UNK rate (lower is better) | Mean tokens/sentence |
@@ -745,6 +751,9 @@ Neither dominates across both goals.
 I would **not** switch from BPE to WordLevel for multilingual production ingestion.
 
 Reason: lower fertility from WordLevel looks attractive, but higher unknown rate is riskier for real world tasks, especially for long spellings, names, transliteration drift, and user-generated text. For most real pipelines, predictable coverage is more valuable than maximal compression.
+
+---
+
 ### Task 11 — Can You Trust the Benchmark Numbers?
 
 ***background:***
