@@ -999,6 +999,83 @@ about them:
 I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the
 true hardware limit of the code when it isn't being interrupted by the OS scheduler.
 
+---
+
+## Task 12 - Where the Design Lies to You
+
+This task asks for a gap between architecture intent and real behavior. I found it in the `decode()` function inside `src/abctokz/tokenizer.py` as mentioned.
+
+### Intended Design (what the abstraction promises)
+
+`decode(ids, skip_special_tokens=True)` should remove **special tokens only** and decode everything else.
+
+From the method signature and docstring, the contract sounds like:
+
+- if a token is explicitly registered as special, skip it
+- if not, keep it
+
+That is a clean abstraction and exactly what users expect.
+
+### Actual Behavior
+
+In `decode()`, the filtering logic is:
+
+```python
+tokens = [
+    t for t in tokens
+    if t and not (t in special_strs or (t.startswith("<") and t.endswith(">")))
+]
+```
+
+That second condition means: **drop every token that looks like `<...>`**, even when it is not configured as a special token.
+
+So the implementation silently enforces an undocumented heuristic that is broader than the stated API contract.
+
+### Concrete Reproduction
+
+I wrote and ran `examples/task12_decode_gap.py` with a WordLevel tokenizer trained on normal text containing a literal token `<div>`.
+
+Run command:
+
+```bash
+.venv/bin/python examples/task12_decode_gap.py
+```
+
+Observed output:
+
+```text
+=== Task 12 decode() gap demo ===
+special_tokens_defined=[]
+input='hello <div> world'
+encoded_tokens=['hello', '<div>', 'world']
+encoded_ids=[1, 3, 2]
+decoded_default='hello world'
+decoded_skip_special_false='hello <div> world'
+round_trip_success_rate(default)= 0.000
+```
+
+Key point: no special tokens were configured (`special_tokens_defined=[]`), but default decode still deleted `<div>`.
+
+### Why this is serious
+
+This is a **silent data-loss bug** for angle-bracket content:
+
+- HTML/XML-like tokens (`<div>`, `<br>`, `<tag>`) vanish unexpectedly
+- placeholders like `<CITY>` or `<DATE>` are dropped
+- round-trip can fail even when the model itself encoded tokens correctly
+
+The architecture appears clean, but behavior is broader and unsafe.
+
+### Minimal fix
+
+In `decode()`, remove the heuristic branch `(t.startswith("<") and t.endswith(">"))`.
+
+Only skip tokens that are actually in `self._special_tokens` (or were injected by the configured post-processor). That aligns runtime behavior with the API promise while keeping the change minimal and low risk.
+
+So the gap is: **"skip special tokens" abstraction vs "skip all angle-bracket tokens" implementation**.
+
+---
+
 ## Task 13 — Predict, Then Verify
 
 ***Background:***
