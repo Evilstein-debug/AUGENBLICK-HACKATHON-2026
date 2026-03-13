@@ -1460,3 +1460,61 @@ round_trip_success_rate(default)= 1.000
 ```
 
 Before the fix, `decoded_default` was `'hello world'` and round-trip success was `0.000`.
+
+---
+
+## Task 18 — Why This Change and Not a Bigger One?
+
+### How localized is the change?
+
+The fix touches **exactly one line in one file**: line 188 of `src/abctokz/tokenizer.py`.
+
+Every other file in the repository is completely untouched:
+- No changes to `models/`, `trainers/`, `normalizers/`, `pretokenizers/`, `decoders/`, `vocab/`, `adapters/`, `eval/`, `config/`, or `cli/`.
+- No API signature changes — `decode(ids, skip_special_tokens=True)` has the same parameters and return type.
+- No serialization format changes — saved tokenizer artifacts on disk remain fully compatible.
+
+The only addition is one focused regression test in the existing integration test file, which is standard practice after any behavior fix.
+
+### What is the risk of the change?
+
+The risk is essentially zero. The change **only removes** a broader filter and replaces it with a strictly narrower one:
+
+```
+# Before: skip anything that is a configured special token OR looks like <...>
+if t and not (t in special_strs or (t.startswith("<") and t.endswith(">")))
+
+# After: skip only what is explicitly a configured special token
+if t and t not in special_strs
+```
+
+The only way the new code behaves differently from the old code is when a token:
+1. starts with `<` and ends with `>`, **and**
+2. is NOT in `self._special_tokens`
+
+In that exact situation, the old code dropped the token silently; the new code keeps it. That is exactly the correction we want and no user who was relying on the old broken behavior would have considered it correct.
+
+The regression test makes the fix verifiable:
+
+```bash
+.venv/bin/python -m pytest tests/integration/test_train_save_load.py -k angle_bracket -q
+# Output: .   [100%]   1 passed
+```
+
+### Who benefits and how?
+
+Any user whose corpus contains HTML/XML markup, template placeholders, or custom angle-bracket tokens (e.g., `<unused0>`, `<mask>`, `<extra_id_0>`, `<div>`, `<br/>`) now gets lossless round-trips through `decode()`, which is what the function contract promises.
+
+This also makes `round_trip_success_rate` (from `src/abctokz/eval/metrics.py`) a meaningful metric again for such corpora. Before the fix, it could silently report `round_trip_success_rate` as `0.000` for a tokenizer that was otherwise working perfectly just because it skipped corpus containing angle brackets.
+
+### What is the bigger refactor that would be wrong to do now?
+
+The architecturally "cleaner" change would be to move special-token filtering entirely inside the decoder layer (i.e., into `src/abctokz/decoders/base.py` or into `SubwordDecoder`/`WordDecoder`). The argument would be: the decoder is the component that reconstructs strings from tokens, so deciding which tokens to omit is naturally its responsibility, not the orchestrator's.
+
+That refactor is **wrong to do here** for three reasons:
+
+1. **Width of change:** It would require modifying `base.py`, both concrete decoder subclasses, and their unit tests in `tests/unit/test_decoders.py`. That is at least 3–4 files changed instead of 1.
+
+2. **Impact radius:** The decoder interface is used not just by `tokenizer.py` but potentially by any future adapter (see `src/abctokz/adapters/`). Changing its contract mid-project risks silent behavioral regressions in code paths that were not under test for this specific scenario.
+
+3. **The bug is shallow:** The root cause was purely a one-line logic error in a single filter expression. A large refactor to fix a one-line bug is not sensible, the fix should be as small as the cause.
