@@ -1179,3 +1179,83 @@ We saw this exact issue in Task 13! The architecture uses deeply nested, strictl
 **The architecture gets in the way**
 
 To add WordPiece, I couldn't just pass a `"wordpiece"` string. I would have to carefully construct a new `WordPieceConfig` class, strictly define all its hyperparameters (like `max_input_chars_per_word` or `unk_token`), and then successfully inject that new type into the massive Union type that validates the master TokenizerConfig.
+
+## Task 16 — Is This Ready for Production?
+
+***Background:***
+
+Spent quite some time digging through the whole architecture to see if this can actually scale. Treating this like a real code review for a system that needs to process millions of docs.
+
+***Understanding the context:***
+
+If someone told me to push this to production tomorrow for a massive text pipeline, i would definitely ask for a pause. It is a beautiful architecture for what it is, but it has some deep structural bottlenecks.
+
+Here is my honest audit based on the codebase.
+
+### 1. *Three specific reasons you'd feel confident deploying it*
+
+First off, the Devanagari support is actually native, not just an afterthought. they specifically built a `devanagari.py` normalizer and a `devanagari_aware.py` pre-tokenizer. so for handling Hindi/Marathi documents, the linguistic quality is solid.
+
+Second, the configuration state is bulletproof. they used **Pydantic schemas** that are frozen. This means you won't get weird runtime state mutations where some middleware accidentally changes the config.
+
+Third, the architecture isolates heavy dependencies. The heavy stuff like huggingface or sentencepiece is locked inside the `adapters` folder. So we can deploy the core engine as a lightweight microservice without downloading gigabytes of external ML bloatware.
+
+### 2. *Three specific reasons you'd be hesitant — concrete gaps*
+
+The first major gap is that the BPE algorithm has an O(N²) time complexity.
+
+```python
+    def _apply_merges(self, pieces: list[str]) -> list[str]:
+        while len(pieces) > 1:
+            best_rank: int | None = None
+            best_idx = -1
+
+            for i in range(len(pieces) - 1):
+                pair = (pieces[i], pieces[i + 1])
+                rank = self._merges.get_rank(pair)
+                if rank is not None and (best_rank is None or rank < best_rank):
+                    best_rank = rank
+                    best_idx = i
+
+            if best_idx == -1:
+                break
+```
+
+For every single merge, it rescans the entire array of remaining pieces inside a loop. For long, agglomerated Hindi words, this quadratic scaling will completely choke the CPU.
+
+The second gap is the **single-threaded file I/O** during training.
+
+```python
+        def _corpus_iter():
+            for path in corpus_paths:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if normalizer:
+                            line = normalizer.normalize(line)
+                        if pretokenizer:
+                            line = " ".join(pretokenizer.pre_tokenize(line))
+                        yield line
+```
+
+It reads files sequentially, line-by-line, on a single thread. processing millions of documents will bottleneck hard on disk I/O because it doesn't use multiprocessing.
+
+The third gap is local-only storage coupling.
+
+```python
+    def save(self, path: str) -> None:
+        out = ensure_dir(path)
+        self._model.save(str(out))
+```
+
+the save function in the orchestrator is hardcoded to use local POSIX paths with things like `ensure_dir`. In a real production system, we need to save artifacts directly to cloud storage like AWS S3.
+
+### 3. *If you had to rank the gaps by urgency, what's the most important thing to fix first?*
+
+**1st priority**: The O(N²) BPE loop. we cannot process millions of documents if the core mathematical engine fundamentally scales quadratically. We need to refactor it to use a priority queue.
+
+**2nd priority**: The single-threaded I/O. We need to rewrite `_corpus_iter` using Python's multiprocessing to read files in parallel chunks.
+
+**3rd priority**: Local-only storage. We can temporarily bypass this by saving to a local docker volume and uploading it via an external bash script, so it's the least urgent.
