@@ -1,7 +1,5 @@
 # Solutions to Tasks
 
-# Solutions to Tasks
-
 ### TASK 1
 
 ### Question :
@@ -144,65 +142,115 @@ appending "##" and its unique id for every token.
 yet to do
 
 
+### Task 2 — Who Does What? Mapping Module Responsibilities
 
-## Task 2 — Who Does What? Mapping Module Responsibilities
+The architecture is actually pretty standard for a modern Python library—everything is strictly separated, with a few weird exceptions. Here is how the responsibilities map out.
 
 **1. Module Responsibility Mapping**
-* **Training a tokenizer (learning vocabulary from text):** Handled by `src/abctokz/trainers/` (e.g., bpe_trainer.py, unigram_trainer.py).
 
-* **Using a trained tokenizer to encode new text:** Orchestrated by `src/abctokz/tokenizer.py` (the main API controller), which routes the text into the core logic engines located in `src/abctokz/models/` (the subword extraction algorithms like BPE, Unigram and Wordlevel).
+* **Training a tokenizer (learning vocabulary from text):** All the heavy lifting for crunching a corpus and building a vocabulary happens in `src/abctokz/trainers/`. If you look inside, you'll see specific scripts like bpe_trainer.py and unigram_trainer.py that handle the actual statistical learning.
 
-* **Saving and loading a tokenizer to/from disk:** Implemented directly within `src/abctokz/tokenizer.py` via the `save()` and `load()` class methods on `src/abctokz/models/`.
+* **Using a trained tokenizer to encode new text:** This is a two-part job. The main one is `src/abctokz/tokenizer.py` (the core orchestrator). It takes the string and routes it through the pipeline, but the actual math and subword extraction is outsourced to the engines living inside `src/abctokz/models/` (which holds the logic for BPE, Unigram, and WordLevel).
 
-* **Measuring tokenizer quality (fertility, UNK rate, etc.):** Located in `src/abctokz/eval/metrics.py` and `src/abctokz/eval/benchmark.py`.
+* **Saving and loading a tokenizer to/from disk:** Surprisingly, this isn't given to a dedicated storage service. It is implemented directly inside `src/abctokz/tokenizer.py` using the save() and load() methods on the main tokenizer class, which personally is not what I admire.
 
-* **Comparing abctokz against external tokenizers:** Isolated inside `src/abctokz/adapters/` (specifically `hf.py` (Hugging Face) and `sentencepiece.py` (Sentence Piece)).
+* **Measuring tokenizer quality (fertility, UNK rate, etc.):** Everything related to grading the model lives in the `src/abctokz/eval/` directory. Specifically, metrics.py handles scores (like counting unknown tokens), while benchmark.py is dedicated to measuring system throughput and latency.
+
+* **Comparing abctokz against external tokenizers:** This is heavily isolated inside `src/abctokz/adapters/`, which contains dedicated wrapper scripts like hf.py (for Hugging Face) and sentencepiece.py (for Google's SentencePiece).
 
 **2. A Clean Module Boundary**
-The most satisfying architectural boundary in this codebase is the **`src/abctokz/adapters/`** module. 
 
-**Why it is clean:** External machine learning libraries like HuggingFace's `transformers` or Google's `sentencepiece` are massive, heavy dependencies. The repo isolated these inside the `adapters/` folder. 
+What I really loved finding in this codebase was how they handled external dependencies—specifically the **`src/abctokz/adapters/`** module.
 
-The core `tokenizer.py` orchestrator and the `models/` directory never import from `adapters/`. This acts as a strict Anti-Corruption Layer. It ensures that standard users can run the core tokenizer without being forced to download gigabytes of third-party libraries.
+**Why it is satisfyingly clean:** External machine learning libraries like HuggingFace’s `transformers` or Google’s `sentencepiece` are absolutely large. They carry massive, heavy dependencies. The architects of this repo were smart enough to lock all of that code entirely inside the `adapters/` folder. 
+
+If we look at the import trees, the core `tokenizer.py` orchestrator and the `models/` directory *never* import anything from `adapters/`. It acts as a strict Anti-Corruption Layer. In practice, this means if a standard user just wants to run this tokenizer locally, they aren't forced to download gigabytes of third-party ML libraries just to get the code to compile, which is what I liked very much. 
 
 **3. A Blurry or Inconsistent Module Boundary**
-The boundary feels highly blurry within **`src/abctokz/tokenizer.py`**, specifically regarding the `save()` and `load()` methods.
 
-**Why it is blurry:** The `AugenblickTokenizer` class is supposed to coordinate the text processing pipeline (Normalization → Pre-tokenization → Model). However, its `save()` method suddenly takes on low-level file system tasks—like creating directories, calculating checksums, and writing JSON files. This mixes core tokenization logic with direct file storage operations, which violates the Single Responsibility Principle.
+On the flip side, the boundary feels highly inconsistent and blurry within **`src/abctokz/tokenizer.py`**—specifically when you look at how the `save()` and `load()` methods are written.
 
-**What I would do about it:**
-Instead of creating brand new folders, I would stick to the current setup and move this saving logic into the existing `src/abctokz/vocab/serialization.py` file, or add it to the helpers in `src/abctokz/utils/io.py`. The AugenblickTokenizer shouldn't have to care about how files are saved to the hard drive. It should just pass the data to an external save function instead of building the JSON files manually.
+**Why it feels blurry:** The `AugenblickTokenizer` class is clearly designed to be a high-level text processing orchestrator. Its whole job is to route strings through Normalization → Pre-tokenization → Model. 
+However, when you scroll down to its `save()` method, it suddenly starts doing low-level file system operations. It's actively creating directories (`mkdir`), manually calculating SHA256 checksums, and building raw JSON manifests from scratch. It violently mixes core text-transformation logic with direct hard-drive I/O operations, which is a classic violation of the Single Responsibility Principle. It makes the orchestrator a "Fat Controller."
 
----
+```
+def save(self, path: str) -> None:
+        out = ensure_dir(path)
+        self._model.save(str(out))
 
-## Task 5 — Is It Truly Deterministic?
+        st_data = {k: v.to_dict() for k, v in self._special_tokens.items()}
+        save_json(st_data, out / SPECIAL_TOKENS_FILENAME)
 
-When training tokenizers, the output must be perfectly repeatable. We ran an experiment (`experiments/determinism_bpe.py`) to prove that training `abctokz` twice on the exact same data produces identical results. 
+        model_type = self._infer_model_type()
+        config_data: dict[str, object] = {"model_type": model_type, "schema_version": SCHEMA_VERSION}
+        save_json(config_data, out / CONFIG_FILENAME)
+
+        vocab_size = self._model.get_vocab_size()
+        checksum = ""
+        vocab_path = out / "vocab.json"
+        if vocab_path.exists():
+            checksum = sha256_file(vocab_path)
+
+        metadata = ArtifactMetadata(
+            schema_version=SCHEMA_VERSION,
+            model_type=model_type,
+            vocab_size=vocab_size,
+            created_at=datetime.datetime.utcnow().isoformat() + "Z",
+            checksum=checksum,
+        )
+        save_json(metadata.to_dict(), out / MANIFEST_FILENAME)
+        logger.info("Tokenizer saved to %s (vocab_size=%d)", path, vocab_size)
+```
+
+**What I would do about it:** I wouldn't tear up the repo to create a brand new architecture. I would just respect the current setup and move this messy saving logic into the already-existing `src/abctokz/vocab/serialization.py` file, or just append it to the helper functions in `src/abctokz/utils/io.py`.
+
+The `AugenblickTokenizer` class shouldn't have to care about how or where its files are saved to a hard drive; it should just blindly pass its state to an external save function and let the I/O module handle the JSON dumping.
+
+### Task 5 — Is It Truly Deterministic?
+
+The documentation claims the training output is perfectly repeatable, but I rarely trust docs until I've verified it myself. I set up a quick experiment (`experiments/determinism_bpe.py`) to train the `abctokz` BPE model twice from scratch on the exact same dataset to see if anything drifted.
 
 ### What IS Deterministic?
 
-Our test confirmed the following outputs are **100% identical** across runs:
+So, the experiment found that the core artifacts are bulletproof. Our tests confirmed these outputs are **100% identical** across runs:
 
-* **Vocabulary Order (`vocab.json`):** Both files were byte-for-byte matches (2529 chars). The code explicitly sorts ties alphabetically, preventing random ordering.
-* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every time (2231 chars).
-* **Token Outputs:** Encoding the same text through both tokenizers produced the exact same token strings and ID numbers.
+* **Vocabulary Order (`vocab.json`):** Both generated files were byte-for-byte matches (exactly 2529 chars). If you dig into the training code, it explicitly sorts frequency ties alphabetically. That prevents the random hash-map ordering bugs that usually plague Python dictionaries.
+* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every single time (2231 chars). 
+* **Token Outputs:** Encoding the same benchmark text through both tokenizer instances fired back the exact same token arrays and ID numbers.
 
-*(See the [attached screenshot](/public//images/experiment_bpe.png) for the terminal output showing matching arrays and exact file comparisons).*
+*(I've attached a screenshot of the terminal output showing the matching arrays and file diffs:*
+
+![OUTPUT_SCREENSHOT](/public/images/experiment_bpe.png)
 
 ### What is NOT Deterministic
 
-While the final model files are identical, the training process varies:
+While the compiled models are identical, the hardware execution is not:
 
-* **Training Time:** As seen in our logs, Run 1 took 0.0913 seconds, while Run 2 took 0.0099 seconds. 
+* **Training Time:** Run 1 clocked in at 0.0913 seconds, while Run 2 immediately dropped to 0.0099 seconds. 
 
-This happens because of the operating system's background tasks, CPU caching, and thermal throttling. It is **completely normal** and doesn't affect the final tokenizer artifacts.
+This isn't a bug in the code. It is just the reality of CPU caching (the data was already warm in memory for the second run), thermal throttling, and OS background noise. The time varies, but it doesn't lessen the final tokenizer artifacts.
 
 ### Remaining Risks
 
-Even with solid code, determinism can fail under these specific edge cases:
+Even though this specific local test passed, determinism is incredibly fragile. Here are the edge cases that I think could realistically break this codebase:
 
-1. **Different Computers (CPU/OS):** Unigram models use decimal math (`math.log`). Different processors (like an ARM Mac vs. an Intel PC) might round very long decimals differently, which could change tie-breaker results.
-2. **Future Multi-threading:** If a developer updates the code to load data in parallel (multiple threads at once) without strictly ordering the results, the training data will mix randomly and break determinism.
+1. **Cross-Platform Math:** The Unigram model relies heavily on floating-point probabilities (`math.log`). Different CPU architectures (like an M-series Mac vs. an Intel server) handle deep decimal rounding slightly differently. A tiny precision difference at the 15th decimal place can flip a probability tie-breaker, completely altering the token boundaries.
+2. **Future Multi-threading:** Right now, the data pipeline is single-threaded. If a developer later tries to optimize the `_corpus_iter()` generator by parallelizing the file reads without strictly enforcing the order of the results, chunks of text will hit the trainer in a random sequence. That race condition will immediately destroy the determinism..
+
+```
+def _corpus_iter():
+            for path in corpus_paths:
+                with open(path, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if normalizer:
+                            line = normalizer.normalize(line)
+                        if pretokenizer:
+                            line = " ".join(pretokenizer.pre_tokenize(line))
+                        yield line
+```
 
 ### Task 3 — The National Anthem Test
 
