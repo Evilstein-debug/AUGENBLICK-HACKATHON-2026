@@ -1518,3 +1518,23 @@ That refactor is **wrong to do here** for three reasons:
 2. **Impact radius:** The decoder interface is used not just by `tokenizer.py` but potentially by any future adapter (see `src/abctokz/adapters/`). Changing its contract mid-project risks silent behavioral regressions in code paths that were not under test for this specific scenario.
 
 3. **The bug is shallow:** The root cause was purely a one-line logic error in a single filter expression. A large refactor to fix a one-line bug is not sensible, the fix should be as small as the cause.
+
+---
+
+## Task 20 — Explain Tokenization to Someone Who Doesn't Know
+
+All these language models are really good at one thing and that's predicting the next word. To achieve this, tokenization is used. In tokenization we basically create chunks of text with different strategies, and each chunk is assigned a number which is called a token. These chunks could be formed from a given text by grouping it in any shape or form depending on the strategy used. Now you might think wonder: why is it required? Why can’t a model just read text the way humans do?
+
+The reason is that computers don’t actually understand characters or words directly. They work with numbers. Tokenization acts as the bridge between human language and numerical computation. It converts messy, irregular text into a structured sequence of tokens that a model can process efficiently.
+
+At first glance, this might sound simple, just split text by spaces and you’re done. But real language is far more complicated than that. Words can appear in many forms, punctuation behaves differently across contexts, and new or rare words appear all the time. For example, if a tokenizer only knows the word “play” but encounters “playfulness”, it needs a strategy to break it into meaningful pieces instead of marking the whole word as unknown.
+
+The naive approach is `text.split()`: split on spaces, get words, assign each word a number. It works fine until you meet a word the system has never seen. Say someone types `"xylophonically"`. The model has no number for it, so it gets a special "I don't know" marker — `<unk>` — and any meaning in that word evaporates.
+
+Smarter methods break words into *pieces* instead. The **BPE** algorithm, used by GPT-4 and many others, starts with individual characters and repeatedly merges the most common pairs. After enough merges, common words become single tokens (`"hello"` → `[hello]`) while rare words fall back to short pieces (`"xylophonically"` → `["x", "y", "l", "o", …]`). This drastically reduces unknowns without needing a vocabulary of every word in every language.
+
+**Here's where multilingual gets really interesting.** Every popular tokenizer was trained on text from the internet, which is overwhelmingly English. When we ran the Indian national anthem through GPT-4's tokenizer, we got a **fertility of 4.9** (fertility = number_of_tokes / number_of_whitespace_words, lesser fertility is better) for the Devanagari version — nearly 5 tokens per word, because GPT-4 has almost no merged Devanagari pieces and treats each consonant as its own token. The same text through `abctokz`, trained specifically on Hindi and Marathi, came out at **2.4** — roughly half the token count for the same meaning. Fewer tokens means cheaper inference and less wasted context window.
+
+There's also an invisible correctness problem. When we decoded tokens back into text, any token shaped like `<div>` was silently dropped — because the decoder mistook it for a special system token. The text looked fine until you measured it. Tokenization mistakes like this don't throw errors; they just corrupt your data quietly.
+
+In practice, tokenization quietly shapes everything a language model can understand because the model never sees the words, it only sees the tokens the tokenizer chooses to represent those words.
