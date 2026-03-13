@@ -61,17 +61,17 @@ the code block for encoder function:
 
 ```python
  def encode(self, text: str) -> Encoding:
-        """Encode *text* into an :class:`~abctokz.types.Encoding`.
+    """Encode *text* into an :class:`~abctokz.types.Encoding`.
 
-        The full pipeline is applied: normalization → pre-tokenization
-        → model tokenization → post-processing.
+    The full pipeline is applied: normalization → pre-tokenization
+    → model tokenization → post-processing.
 
-        Args:
-            text: Raw input string.
+    Args:
+        text: Raw input string.
 
-        Returns:
-            :class:`~abctokz.types.Encoding` with ids, tokens, and offsets.
-        """
+    Returns:
+        :class:`~abctokz.types.Encoding` with ids, tokens, and offsets.
+    """
 ``` 
 
 2. *What did the normalizer do to the string before the model saw it?*
@@ -93,9 +93,9 @@ in the specific line of encoder function
 
 ```python
         if self._pretokenizer:
-            pre_tokens = self._pretokenizer.pre_tokenize(normalized)
-        else:
-            pre_tokens = [normalized]
+pre_tokens = self._pretokenizer.pre_tokenize(normalized)
+else:
+pre_tokens = [normalized]
 ```
 
 does really the same thing as the normalizer block, checks if a instance of pretokenizer is attacked, if not you can see
@@ -114,24 +114,24 @@ it does this in the 3rd stage, the tokenization process
 
 ```python
         cursor = 0
-        for pre_tok in pre_tokens:
-            # Find the offset of this pre_token in the normalized string
-            start_pos = normalized.find(pre_tok, cursor)
-            if start_pos == -1:
-                start_pos = cursor
+for pre_tok in pre_tokens:
+    # Find the offset of this pre_token in the normalized string
+    start_pos = normalized.find(pre_tok, cursor)
+    if start_pos == -1:
+        start_pos = cursor
 
-            pairs = self._model.tokenize(pre_tok)
-            char_offset = start_pos
-            for tok_str, tok_id in pairs:
-                tok_len = len(tok_str.lstrip("##"))  # strip continuation prefix for offset
-                ids.append(tok_id)
-                tokens.append(tok_str)
-                offsets.append((char_offset, char_offset + len(pre_tok)))
-                is_special = int(tok_str in self._special_tokens)
-                special_mask.append(is_special)
-                attention_mask.append(1)
+    pairs = self._model.tokenize(pre_tok)
+    char_offset = start_pos
+    for tok_str, tok_id in pairs:
+        tok_len = len(tok_str.lstrip("##"))  # strip continuation prefix for offset
+        ids.append(tok_id)
+        tokens.append(tok_str)
+        offsets.append((char_offset, char_offset + len(pre_tok)))
+        is_special = int(tok_str in self._special_tokens)
+        special_mask.append(is_special)
+        attention_mask.append(1)
 
-            cursor = start_pos + len(pre_tok)
+    cursor = start_pos + len(pre_tok)
 ```
 
 here it iterates through every sub token in the pre_token list, and it runs the bpe algorithm for every word,
@@ -196,31 +196,31 @@ violation of the Single Responsibility Principle. It makes the orchestrator a "F
 
 ```python
 def save(self, path: str) -> None:
-        out = ensure_dir(path)
-        self._model.save(str(out))
+    out = ensure_dir(path)
+    self._model.save(str(out))
 
-        st_data = {k: v.to_dict() for k, v in self._special_tokens.items()}
-        save_json(st_data, out / SPECIAL_TOKENS_FILENAME)
+    st_data = {k: v.to_dict() for k, v in self._special_tokens.items()}
+    save_json(st_data, out / SPECIAL_TOKENS_FILENAME)
 
-        model_type = self._infer_model_type()
-        config_data: dict[str, object] = {"model_type": model_type, "schema_version": SCHEMA_VERSION}
-        save_json(config_data, out / CONFIG_FILENAME)
+    model_type = self._infer_model_type()
+    config_data: dict[str, object] = {"model_type": model_type, "schema_version": SCHEMA_VERSION}
+    save_json(config_data, out / CONFIG_FILENAME)
 
-        vocab_size = self._model.get_vocab_size()
-        checksum = ""
-        vocab_path = out / "vocab.json"
-        if vocab_path.exists():
-            checksum = sha256_file(vocab_path)
+    vocab_size = self._model.get_vocab_size()
+    checksum = ""
+    vocab_path = out / "vocab.json"
+    if vocab_path.exists():
+        checksum = sha256_file(vocab_path)
 
-        metadata = ArtifactMetadata(
-            schema_version=SCHEMA_VERSION,
-            model_type=model_type,
-            vocab_size=vocab_size,
-            created_at=datetime.datetime.utcnow().isoformat() + "Z",
-            checksum=checksum,
-        )
-        save_json(metadata.to_dict(), out / MANIFEST_FILENAME)
-        logger.info("Tokenizer saved to %s (vocab_size=%d)", path, vocab_size)
+    metadata = ArtifactMetadata(
+        schema_version=SCHEMA_VERSION,
+        model_type=model_type,
+        vocab_size=vocab_size,
+        created_at=datetime.datetime.utcnow().isoformat() + "Z",
+        checksum=checksum,
+    )
+    save_json(metadata.to_dict(), out / MANIFEST_FILENAME)
+    logger.info("Tokenizer saved to %s (vocab_size=%d)", path, vocab_size)
 ```
 
 **What I would do about it:** I wouldn't tear up the repo to create a brand new architecture. I would just respect the
@@ -472,27 +472,29 @@ could realistically break this codebase:
 
 ```python
 def _corpus_iter():
-            for path in corpus_paths:
-                with open(path, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if normalizer:
-                            line = normalizer.normalize(line)
-                        if pretokenizer:
-                            line = " ".join(pretokenizer.pre_tokenize(line))
-                        yield line
+    for path in corpus_paths:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                if normalizer:
+                    line = normalizer.normalize(line)
+                if pretokenizer:
+                    line = " ".join(pretokenizer.pre_tokenize(line))
+                yield line
 ```
-
 
 ## Task 6 - Making the Tokenizer Say "I Don't Know"
 
 **Approach**
 
-We have to make the tokenizer produce `<unk>` (unknown tokens). Making the wordlevel model to produce `<unk>` tokens is the easiest as one word is one token for it. The vocabulary is built directly from words in the training corpus, if a word is not in the vocabulary, it will result in an `<unk>` token.
+We have to make the tokenizer produce `<unk>` (unknown tokens). Making the wordlevel model to produce `<unk>` tokens is
+the easiest as one word is one token for it. The vocabulary is built directly from words in the training corpus, if a
+word is not in the vocabulary, it will result in an `<unk>` token.
 
-I ran a controlled experiment across all three model families using one shared training corpus and three stress-test inputs. The reproducible script is `examples/task6_make_unk.py`.
+I ran a controlled experiment across all three model families using one shared training corpus and three stress-test
+inputs. The reproducible script is `examples/task6_make_unk.py`.
 
 Training corpus used for all models was intentionally English-only:
 
@@ -617,7 +619,8 @@ This is a **symbol coverage** issue that appears even when surrounding text is k
 
 **Most graceful: BPE**
 
-- For OOV English word `xylophonically`, BPE still recovers most of the tokenization and only 2/13 pieces are unknown (`unk_rate=0.154`).
+- For OOV English word `xylophonically`, BPE still recovers most of the tokenization and only 2/13 pieces are unknown (
+  `unk_rate=0.154`).
 - It preserves useful partial information through subword decomposition.
 
 **Most fragile: WordLevel (and Unigram in this specific setup)**
@@ -625,7 +628,8 @@ This is a **symbol coverage** issue that appears even when surrounding text is k
 - WordLevel collapses any unseen word directly to `<unk>` because it has no subword fallback.
 - Unigram here is also very brittle on OOV forms, producing 14 unknowns for one word due to piece-table miss.
 
-In short: for open-vocabulary behavior, **subword BPE > WordLevel**, and Unigram quality depends heavily on whether piece coverage is broad enough.
+In short: for open-vocabulary behavior, **subword BPE > WordLevel**, and Unigram quality depends heavily on whether
+piece coverage is broad enough.
 
 ---
 
@@ -637,49 +641,68 @@ Add **inference-time class mapping** before encode:
 - map URLs to `<URL>`
 - map long numbers to `<NUM>`
 
-Then add these as special tokens in the tokenizer artifacts. This does not retrain model weights but converts unpredictable OOV surface forms into stable known categories, reducing `<unk>` spikes in production logs.
+Then add these as special tokens in the tokenizer artifacts. This does not retrain model weights but converts
+unpredictable OOV surface forms into stable known categories, reducing `<unk>` spikes in production logs.
 
-If I had to pick one immediate operational fix for this repository: use BPE for multilingual inference and add `<EMOJI>/<URL>/<NUM>` preprocessing guards.
+If I had to pick one immediate operational fix for this repository: use BPE for multilingual inference and add
+`<EMOJI>/<URL>/<NUM>` preprocessing guards.
 
-GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagari** compared to an `abctokz` BPE tokenizer trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for Indic-script workloads.
+GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagari** compared to an `abctokz` BPE tokenizer
+trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for
+Indic-script workloads.
 
 ### Task 7 — Does Encode → Decode Get You Back to Start?
 
-I ran the `experiments/round_trip.py` script to stress-test the pipeline. The prompt gave a massive hint about NFD vs. NFC Unicode forms, so I fed the tokenizer exact visual duplicates of the word `"résumé"` and the Devanagari word `"नमस्ते"`, but encoded differently at the byte level. 
+I ran the `experiments/round_trip.py` script to stress-test the pipeline. The prompt gave a massive hint about NFD vs.
+NFC Unicode forms, so I fed the tokenizer exact visual duplicates of the word `"résumé"` and the Devanagari word
+`"नमस्ते"`, but encoded differently at the byte level.
 
-The results perfectly highlight the difference between a "dumb" string parser and a smart NLP tokenizer. Here is exactly what is happening under the hood.
+The results perfectly highlight the difference between a "dumb" string parser and a smart NLP tokenizer. Here is exactly
+what is happening under the hood.
 
 ### 1. The Exact Match (Lossless)
-For standard inputs like `'hello world'` or NFC-composed `'नमस्ते दुनिया'`, the round-trip is perfectly exact. 
-* **Why:** The normalizer looks at the text, sees it's already in its most compressed, canonical Unicode format (Normalization Form C which is NFC), and leaves it alone. The BPE model breaks it down into subwords, and the decoder glues it right back together. Byte for byte, input == output.
+
+For standard inputs like `'hello world'` or NFC-composed `'नमस्ते दुनिया'`, the round-trip is perfectly exact.
+
+* **Why:** The normalizer looks at the text, sees it's already in its most compressed, canonical Unicode format (
+  Normalization Form C which is NFC), and leaves it alone. The BPE model breaks it down into subwords, and the decoder
+  glues it right back together. Byte for byte, input == output.
 
 *(I've attached a screenshot of the terminal output showing the matching arrays and file diffs):*
 
 ![OUTPUT SCREENSHOT](/public/images/round_trip.png)
 
 ### 2. The Lossy Match (Where I felt it gets weird)
+
 Things immediately drift when you pass in the **NFD (Decomposed)** version of `"résumé"` or `"नमस्ते"`.
+
 * **Visually:** NFD `"résumé"` looks identically perfect on the screen.
-* **Under the hood (NFD):** Though, it is actually 8 characters long! It is built using base letters plus invisible combining characters: `r`, `e`, `´` (combining acute accent), `s`, `u`, `m`, `e`, `´`.
-* **The Output:** When encoded and decoded, the string comes back as 6 characters long—the NFC version with fully composed `é` characters. Therefore, `raw_input != decoded_output`. The exact round-trip failed.
+* **Under the hood (NFD):** Though, it is actually 8 characters long! It is built using base letters plus invisible
+  combining characters: `r`, `e`, `´` (combining acute accent), `s`, `u`, `m`, `e`, `´`.
+* **The Output:** When encoded and decoded, the string comes back as 6 characters long—the NFC version with fully
+  composed `é` characters. Therefore, `raw_input != decoded_output`. The exact round-trip failed.
 
 **Is this a bug, an acceptable trade-off, or intentional design?**
 
-It is **100% intentional design**. 
+It is **100% intentional design**.
 
-After a bit of research, I learn that if the normalizer didn't aggressively force everything into NFC format *before* handing it to the BPE model, the model would have to waste valuable vocabulary slots learning two completely different sets of tokens for the exact same word (depending on whether the user's OS keyboard uses NFC or NFD).
+After a bit of research, I learn that if the normalizer didn't aggressively force everything into NFC format *before*
+handing it to the BPE model, the model would have to waste valuable vocabulary slots learning two completely different
+sets of tokens for the exact same word (depending on whether the user's OS keyboard uses NFC or NFD).
 
-By normalizing the input, we lose strict "byte fidelity" to the user's raw keystrokes, but we gain massive semantic efficiency. It is essentially standardizing our database schema.
+By normalizing the input, we lose strict "byte fidelity" to the user's raw keystrokes, but we gain massive semantic
+efficiency. It is essentially standardizing our database schema.
 
 ### 3. The Truth About the `round_trip_success_rate` Metric
 
-If we look at how the architects designed this metric inside `eval/metrics.py`, it reveals exactly what they care about (and what they are trying to hide).
+If we look at how the architects designed this metric inside `eval/metrics.py`, it reveals exactly what they care
+about (and what they are trying to hide).
 
 ```python
 def round_trip_success_rate(
-    originals: list[str],
-    decoded: list[str],
-    normalized_originals: list[str] | None = None,
+        originals: list[str],
+        decoded: list[str],
+        normalized_originals: list[str] | None = None,
 ) -> float:
     targets = normalized_originals if normalized_originals is not None else originals
     if not targets:
@@ -688,16 +711,116 @@ def round_trip_success_rate(
     return matches / len(targets)
 ```
 
-**What it actually measures**: It measures strict, binary string equivalence. 
+**What it actually measures**: It measures strict, binary string equivalence.
 
-It effectively asks: **"Did the Decoder output the exact same string of characters that we decided to use as the target?"**
+It effectively asks: **"Did the Decoder output the exact same string of characters that we decided to use as the
+target?"**
 
-Crucially, by explicitly designing the function to accept normalized_originals and prioritizing it over originals, the metric is built to measure the reversibility of the Subword Model and Decoder phases only. It verifies if the BPE engine successfully reassembled the clean text that the normalizer handed to it.
+Crucially, by explicitly designing the function to accept normalized_originals and prioritizing it over originals, the
+metric is built to measure the reversibility of the Subword Model and Decoder phases only. It verifies if the BPE engine
+successfully reassembled the clean text that the normalizer handed to it.
 
 **What it does NOT measure:**
-Because it uses a strict check, it is a **binary pass/fail**. If a 5,000-word document successfully round-trips but loses a single comma, this metric scores it as a complete 0 for that document. It doesn't measure character-level error rates to tell you how broken the string is.
+Because it uses a strict check, it is a **binary pass/fail**. If a 5,000-word document successfully round-trips but
+loses a single comma, this metric scores it as a complete 0 for that document. It doesn't measure character-level error
+rates to tell you how broken the string is.
 
 ---
+## TASK 8 - What Does the Normalizer Actually Do?
+
+It is a common misconception that a normalizer's primary job is to strip away punctuation, remove commas, or
+aggressively sanitize text. While data cleaning routines might include filtering out unwanted characters, true character
+normalization is about resolving discrepancies beneath the surface. It targets characters that render identically on a
+screen but possess completely different underlying Unicode representations.
+
+The Unicode Equivalence Problem
+
+To understand why this is necessary, you have to look at how computers encode text. In Unicode, there are often multiple
+ways to encode the exact same visual glyph (character):
+
+    Precomposed Characters: A single code point represents the entire character. For example, the character é can be represented by the single Unicode point U+00E9.
+
+    Decomposed Characters: A combination of code points builds the character. That exact same visual é can also be formed by combining the standard letter e (U+0065) with a combining acute accent ´ (U+0301).
+
+If a user types é on one keyboard, it might send the precomposed version. If they copy-paste it from a PDF or type it on
+a different OS, it might send the decomposed version.
+
+### The raw input vs the normalized output — are they identical? If not, what changed?
+
+The change is on a unicode level rather than visual level
+
+Let's look at the letter "é" (lowercase 'e' with an acute accent).
+
+The Visual Match (What the user sees):
+
+    String A: "é"
+
+    String B: "é"
+
+To your eyes, String A and String B look identical. But if you copy and paste them into a Kotlin or Java environment,
+they behave completely differently.
+
+The Unicode Difference (What the computer sees):
+
+    String A (Precomposed): This is built using a single, ready-made Unicode code point: U+00E9. If you check StringA.length, it returns 1.
+
+    String B (Decomposed): This is built using two separate code points stacked on top of each other: U+0065 (the standard letter 'e') + U+0301 (the combining acute accent '´'). If you check StringB.length, it returns 2.
+
+Because their underlying bytes are completely different, a simple check like StringA == StringB will return false, which
+can break search features or database queries
+
+### why many Devanagari normalizer libraries use NFC and not NFKC
+
+even in this normalizer used in this repo, the design docstring explicitly states:
+
+```aiignore
+Design notes
+------------
+*  We apply NFC (not NFKC) because NFKC can collapse Devanagari combining
+   marks in ways that change the visual and phonetic form of the character
+```
+
+NFC strictly combines characters that are canonically equivalent. This means it only merges characters if they are
+fundamentally identical in both sound and appearance.
+Your text looks exactly the same and reads exactly the same, but the underlying byte representation is standardized to
+the shortest possible composed form. **This is safe for Devanagari.**
+
+NFKC is much more aggressive. It uses compatibility equivalence, meaning it will collapse characters that represent the
+same abstract idea, even if they look different or have different formatting. For example, NFKC will flatten the
+separate ligature "ﬃ" into three distinct letters "ffi", or change a superscript "²" into a regular "2"
+Since Devanagari relies heavily on structural ligatures, NFKC's aggressive flattening can dismantle these complex
+character combinations, hence NFC is more preffered.
+
+### What happens to the commas, exclamation mark, and spaces? Where do they end up after pre-tokenization?
+
+as explained above NFC normalization only normalizes the unicode of characters which can be composed in different
+combinations.
+**Hence the commas,exclamation mark, and spaces are preserved and not stripped away.**
+
+outputs where inputs have commas, exclamation mark, and spaces, but standard spacing
+![TASK 8 PIC 1](reference_images/task8_1.png)
+
+outputs where inputs have commas, exclamation mark, and spaces, but exotic unicode spacing
+![TASK 8 PIC 1](reference_images/task8_2.png)
+
+### Why does this matter specifically for Hindi, Marathi, and Sindhi? (Think about ZWJ, ZWNJ, conjunct consonants.)
+
+In Indic scripts, a single visual character (glyph) can be represented in memory as multiple Unicode components. NFC (
+Normalization Form C) ensures that text remains consistent, searchable, and visually correct by prioritizing precomposed
+characters.
+
+Zero Width Joiner (ZWJ) and Zero Width Non-Joiner (ZWNJ) are non-printing characters used to control how letters
+connect.
+
+    ZWJ (U+200D): Used to "force" a half-form of a consonant or a specific conjunct style.
+
+    ZWNJ (U+200C): Used to "break" a connection, preventing two letters from merging into a conjunct.
+
+Why NFC matters here: While NFC primarily focuses on combining marks (like matras or nuktas), it ensures the underlying
+character sequence is stable. If normalization accidentally stripped or reordered the bytes surrounding a ZWJ/ZWNJ, the
+word would visually "break," turning a correct Marathi word into a string of illegible characters with visible viramas
+
+
 
 ## Task 10 — The Compression Trade-off
 
@@ -807,5 +930,4 @@ There are two major design choices in how data is collected across the multiple 
 ### The fix I think of:
 
 I would change it to track the minimum elapsed time across the runs, not the average. The fastest run represents the true hardware limit of the code when it isn't being interrupted by the OS scheduler.
-
 

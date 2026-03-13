@@ -95,3 +95,18 @@ _EXOTIC_SPACES = {
 def _normalize_exotic_whitespace(text: str) -> str:
     """Replace exotic Unicode space characters with ASCII space."""
     return "".join(" " if c in _EXOTIC_SPACES else c for c in text)
+
+if __name__ == "__main__":
+    # 1. Initialize the normalizer.
+    # It defaults to nfc_first=True and strip_zero_width=False
+    norm = DevanagariNormalizer()
+
+
+    sample_text = "गणपती बप्पा मोरया, पुढच्या वर्षी लवकर या!"
+
+    # 3. Call the normalize method
+    result = norm.normalize(sample_text)
+
+    # 4. Print the results
+    print("Original text:  ", repr(sample_text))
+    print("Normalized text:", repr(result))
