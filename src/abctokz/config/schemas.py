@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, ValidationError
 
 from abctokz.constants import (
     BPE_CONTINUATION_PREFIX,

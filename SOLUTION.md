@@ -51,7 +51,7 @@ support for foreign languages arent supported.
 
 1. *Which files and classes were involved at each stage?*
 
-the train_bpe.py and  encode() & decode() function is written in tokenizer.py
+the train_bpe.py and encode() & decode() function is written in tokenizer.py
 additionally a temporary ghost "corpus" is created for the script to run containing all the corpus*30 and then deleted
 automatically after the script is run (pretty nice automation that)
 
@@ -141,37 +141,58 @@ appending "##" and its unique id for every token.
 
 yet to do
 
-
 ### Task 2 — Who Does What? Mapping Module Responsibilities
 
-The architecture is actually pretty standard for a modern Python library—everything is strictly separated, with a few weird exceptions. Here is how the responsibilities map out.
+The architecture is actually pretty standard for a modern Python library—everything is strictly separated, with a few
+weird exceptions. Here is how the responsibilities map out.
 
 **1. Module Responsibility Mapping**
 
-* **Training a tokenizer (learning vocabulary from text):** All the heavy lifting for crunching a corpus and building a vocabulary happens in `src/abctokz/trainers/`. If you look inside, you'll see specific scripts like bpe_trainer.py and unigram_trainer.py that handle the actual statistical learning.
+* **Training a tokenizer (learning vocabulary from text):** All the heavy lifting for crunching a corpus and building a
+  vocabulary happens in `src/abctokz/trainers/`. If you look inside, you'll see specific scripts like bpe_trainer.py and
+  unigram_trainer.py that handle the actual statistical learning.
 
-* **Using a trained tokenizer to encode new text:** This is a two-part job. The main one is `src/abctokz/tokenizer.py` (the core orchestrator). It takes the string and routes it through the pipeline, but the actual math and subword extraction is outsourced to the engines living inside `src/abctokz/models/` (which holds the logic for BPE, Unigram, and WordLevel).
+* **Using a trained tokenizer to encode new text:** This is a two-part job. The main one is `src/abctokz/tokenizer.py` (
+  the core orchestrator). It takes the string and routes it through the pipeline, but the actual math and subword
+  extraction is outsourced to the engines living inside `src/abctokz/models/` (which holds the logic for BPE, Unigram,
+  and WordLevel).
 
-* **Saving and loading a tokenizer to/from disk:** Surprisingly, this isn't given to a dedicated storage service. It is implemented directly inside `src/abctokz/tokenizer.py` using the save() and load() methods on the main tokenizer class, which personally is not what I admire.
+* **Saving and loading a tokenizer to/from disk:** Surprisingly, this isn't given to a dedicated storage service. It is
+  implemented directly inside `src/abctokz/tokenizer.py` using the save() and load() methods on the main tokenizer
+  class, which personally is not what I admire.
 
-* **Measuring tokenizer quality (fertility, UNK rate, etc.):** Everything related to grading the model lives in the `src/abctokz/eval/` directory. Specifically, metrics.py handles scores (like counting unknown tokens), while benchmark.py is dedicated to measuring system throughput and latency.
+* **Measuring tokenizer quality (fertility, UNK rate, etc.):** Everything related to grading the model lives in the
+  `src/abctokz/eval/` directory. Specifically, metrics.py handles scores (like counting unknown tokens), while
+  benchmark.py is dedicated to measuring system throughput and latency.
 
-* **Comparing abctokz against external tokenizers:** This is heavily isolated inside `src/abctokz/adapters/`, which contains dedicated wrapper scripts like hf.py (for Hugging Face) and sentencepiece.py (for Google's SentencePiece).
+* **Comparing abctokz against external tokenizers:** This is heavily isolated inside `src/abctokz/adapters/`, which
+  contains dedicated wrapper scripts like hf.py (for Hugging Face) and sentencepiece.py (for Google's SentencePiece).
 
 **2. A Clean Module Boundary**
 
-What I really loved finding in this codebase was how they handled external dependencies—specifically the **`src/abctokz/adapters/`** module.
+What I really loved finding in this codebase was how they handled external dependencies—specifically the *
+*`src/abctokz/adapters/`** module.
 
-**Why it is satisfyingly clean:** External machine learning libraries like HuggingFace’s `transformers` or Google’s `sentencepiece` are absolutely large. They carry massive, heavy dependencies. The architects of this repo were smart enough to lock all of that code entirely inside the `adapters/` folder. 
+**Why it is satisfyingly clean:** External machine learning libraries like HuggingFace’s `transformers` or Google’s
+`sentencepiece` are absolutely large. They carry massive, heavy dependencies. The architects of this repo were smart
+enough to lock all of that code entirely inside the `adapters/` folder.
 
-If we look at the import trees, the core `tokenizer.py` orchestrator and the `models/` directory *never* import anything from `adapters/`. It acts as a strict Anti-Corruption Layer. In practice, this means if a standard user just wants to run this tokenizer locally, they aren't forced to download gigabytes of third-party ML libraries just to get the code to compile, which is what I liked very much. 
+If we look at the import trees, the core `tokenizer.py` orchestrator and the `models/` directory *never* import anything
+from `adapters/`. It acts as a strict Anti-Corruption Layer. In practice, this means if a standard user just wants to
+run this tokenizer locally, they aren't forced to download gigabytes of third-party ML libraries just to get the code to
+compile, which is what I liked very much.
 
 **3. A Blurry or Inconsistent Module Boundary**
 
-On the flip side, the boundary feels highly inconsistent and blurry within **`src/abctokz/tokenizer.py`**—specifically when you look at how the `save()` and `load()` methods are written.
+On the flip side, the boundary feels highly inconsistent and blurry within **`src/abctokz/tokenizer.py`**—specifically
+when you look at how the `save()` and `load()` methods are written.
 
-**Why it feels blurry:** The `AugenblickTokenizer` class is clearly designed to be a high-level text processing orchestrator. Its whole job is to route strings through Normalization → Pre-tokenization → Model. 
-However, when you scroll down to its `save()` method, it suddenly starts doing low-level file system operations. It's actively creating directories (`mkdir`), manually calculating SHA256 checksums, and building raw JSON manifests from scratch. It violently mixes core text-transformation logic with direct hard-drive I/O operations, which is a classic violation of the Single Responsibility Principle. It makes the orchestrator a "Fat Controller."
+**Why it feels blurry:** The `AugenblickTokenizer` class is clearly designed to be a high-level text processing
+orchestrator. Its whole job is to route strings through Normalization → Pre-tokenization → Model.
+However, when you scroll down to its `save()` method, it suddenly starts doing low-level file system operations. It's
+actively creating directories (`mkdir`), manually calculating SHA256 checksums, and building raw JSON manifests from
+scratch. It violently mixes core text-transformation logic with direct hard-drive I/O operations, which is a classic
+violation of the Single Responsibility Principle. It makes the orchestrator a "Fat Controller."
 
 ```
 def save(self, path: str) -> None:
@@ -202,33 +223,39 @@ def save(self, path: str) -> None:
         logger.info("Tokenizer saved to %s (vocab_size=%d)", path, vocab_size)
 ```
 
-**What I would do about it:** I wouldn't tear up the repo to create a brand new architecture. I would just respect the current setup and move this messy saving logic into the already-existing `src/abctokz/vocab/serialization.py` file, or just append it to the helper functions in `src/abctokz/utils/io.py`.
+**What I would do about it:** I wouldn't tear up the repo to create a brand new architecture. I would just respect the
+current setup and move this messy saving logic into the already-existing `src/abctokz/vocab/serialization.py` file, or
+just append it to the helper functions in `src/abctokz/utils/io.py`.
 
-The `AugenblickTokenizer` class shouldn't have to care about how or where its files are saved to a hard drive; it should just blindly pass its state to an external save function and let the I/O module handle the JSON dumping.
+The `AugenblickTokenizer` class shouldn't have to care about how or where its files are saved to a hard drive; it should
+just blindly pass its state to an external save function and let the I/O module handle the JSON dumping.
 
 ### Task 3 — The National Anthem Test
 
 **Approach**
 
-The experiment uses the existing `abctokz` BPE pipeline, no new code was written. The full script is at [`examples/task3_national_anthem.py`](examples/task3_national_anthem.py).
+The experiment uses the existing `abctokz` BPE pipeline, no new code was written. The full script is at [
+`examples/task3_national_anthem.py`](examples/task3_national_anthem.py).
 
 **Step-by-step**
 
-1. Build a small training corpus containing both English transliteration and Devanagari lines of Jana Gana Mana (first stanza), plus a few supplementary Hindi/Marathi lines. Each line is repeated 50× so word frequencies exceed the default `min_frequency=2` threshold in `BPETrainerConfig`.
+1. Build a small training corpus containing both English transliteration and Devanagari lines of Jana Gana Mana (first
+   stanza), plus a few supplementary Hindi/Marathi lines. Each line is repeated 50× so word frequencies exceed the
+   default `min_frequency=2` threshold in `BPETrainerConfig`.
 2. Create a `bpe_multilingual(vocab_size=500)` config defined in `src/abctokz/config/defaults.py`. This wires together:
-	 - `multilingual_shared_normalizer()` (NFC Unicode normalization + whitespace collapse)
-	 - `DevanagariAwarePreTokenizer` (splits on script boundaries, not just spaces)
-	 - `BPEModel` + `BPETrainer`
+    - `multilingual_shared_normalizer()` (NFC Unicode normalization + whitespace collapse)
+    - `DevanagariAwarePreTokenizer` (splits on script boundaries, not just spaces)
+    - `BPEModel` + `BPETrainer`
 3. Instantiate `Tokenizer.from_config(config)` and call `tokenizer.train([corpus_path], config)`.
 4. Encode the two test sentences and call `fertility()` from `src/abctokz/eval/metrics.py`.
 5. Pass the same strings through `tiktoken.encoding_for_model("gpt-4")` and compare.
 
 **Test sentences**
 
-| | Text |
-|---|---|
+|                         | Text                                                                     |
+|-------------------------|--------------------------------------------------------------------------|
 | English transliteration | `Jana Gana Mana Adhinayaka Jaya He Bharata Bhagya Vidhata Punjab Sindhu` |
-| Devanagari | `जन गण मन अधिनायक जय हे भारत भाग्य विधाता पंजाब सिंधु` |
+| Devanagari              | `जन गण मन अधिनायक जय हे भारत भाग्य विधाता पंजाब सिंधु`                   |
 
 Both sentences have **11 whitespace-separated words**.
 
@@ -249,26 +276,35 @@ Both sentences have **11 whitespace-separated words**.
 
 **Fertility scores**
 
-| Script | Tokens | Words | Fertility (tokens ÷ words) |
-|--------|--------|-------|---------------------------|
-| English transliteration (abctokz) | 38 | 11 | **3.455** |
-| Devanagari (abctokz) | 26 | 11 | **2.364** |
-| English transliteration (GPT-4 / tiktoken) | 23 | 11 | **2.091** |
-| Devanagari (GPT-4 / tiktoken) | 54 | 11 | **4.909** |
+| Script                                     | Tokens | Words | Fertility (tokens ÷ words) |
+|--------------------------------------------|--------|-------|----------------------------|
+| English transliteration (abctokz)          | 38     | 11    | **3.455**                  |
+| Devanagari (abctokz)                       | 26     | 11    | **2.364**                  |
+| English transliteration (GPT-4 / tiktoken) | 23     | 11    | **2.091**                  |
+| Devanagari (GPT-4 / tiktoken)              | 54     | 11    | **4.909**                  |
 
 **Why the numbers differ**
 
 *abctokz English > abctokz Devanagari (3.455 vs 2.364)*
 
-The model was trained on a Devanagari-rich corpus, so the BPE merger rules learned longer Devanagari subword units (e.g. `जन`, `गण`, `मन` appear as single tokens). English transliteration, by contrast, appears in fewer training examples meaning fewer high-frequency character n-grams were merged, leaving many single-character pieces (`J`, `G`, `M`, …) with `##` continuations.
+The model was trained on a Devanagari-rich corpus, so the BPE merger rules learned longer Devanagari subword units (e.g.
+`जन`, `गण`, `मन` appear as single tokens). English transliteration, by contrast, appears in fewer training examples
+meaning fewer high-frequency character n-grams were merged, leaving many single-character pieces (`J`, `G`, `M`, …) with
+`##` continuations.
 
-The `DevanagariAwarePreTokenizer` (see `src/abctokz/pretokenizers/devanagari_aware.py`) also plays a role: it splits on script boundaries, ensuring Devanagari characters are never mixed with Latin characters in a single pre-token, giving the BPE trainer clean Devanagari units to learn merge rules on.
+The `DevanagariAwarePreTokenizer` (see `src/abctokz/pretokenizers/devanagari_aware.py`) also plays a role: it splits on
+script boundaries, ensuring Devanagari characters are never mixed with Latin characters in a single pre-token, giving
+the BPE trainer clean Devanagari units to learn merge rules on.
 
 *tiktoken English < tiktoken Devanagari (2.091 vs 4.909)*
 
-This is the exact opposite pattern. GPT-4's tokenizer was trained on a corpus overwhelmingly dominated by Latin-script text, so it has large English vocabulary entries and merges English words efficiently. Devanagari, however, is low-resource in that training set — the tokenizer has almost no merged Devanagari pieces, so every Unicode code point (consonant, vowel sign, anusvara) becomes its own token, pushing fertility above 4.9.
+This is the exact opposite pattern. GPT-4's tokenizer was trained on a corpus overwhelmingly dominated by Latin-script
+text, so it has large English vocabulary entries and merges English words efficiently. Devanagari, however, is
+low-resource in that training set — the tokenizer has almost no merged Devanagari pieces, so every Unicode code point (
+consonant, vowel sign, anusvara) becomes its own token, pushing fertility above 4.9.
 
-This comparison makes the design intent of `abctokz` concrete: the library exists precisely to close this gap for Devanagari-script languages.
+This comparison makes the design intent of `abctokz` concrete: the library exists precisely to close this gap for
+Devanagari-script languages.
 
 **Bonus — tiktoken comparison output**
 
@@ -278,23 +314,134 @@ This comparison makes the design intent of `abctokz` concrete: the library exist
 	Devanagari : 54 tokens  (fertility 4.909)
 ```
 
-GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagari** compared to an `abctokz` BPE tokenizer trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for Indic-script workloads.
+GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagari** compared to an `abctokz` BPE tokenizer
+trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for
+Indic-script workloads.
 
-### TASK 4 — How Does a Config Become a Tokenizer?
+## TASK 4 — How Does a Config Become a Tokenizer?
 
+To make a tokenizer from a config requires confirugation -> normalizer -> pretoken processor -> model -> post
+processing -> final trained tokenizer
 
+### _where are we getting the default values and config from ??_
+
+Default values are sourced from three primary locations in the codebase:
+
+_src/abctokz/constants.py_ -> This file stores the raw default primitives
+example:
+
+```
+DEFAULT_VOCAB_SIZE = 8000,
+BPE_CONTINUATION_PREFIX = "##", UNK_TOKEN = "<unk>").
+```
+
+_src/abctokz/config/schemas.py_ -> This file defines all the Pydantic data models. Default values are injected directly
+into the schemas using Pydantic's Field(default=...). For instance, it assigns defaults from constants.py to properties
+like vocab_size or uses hardcoded values.
+
+_src/abctokz/config/defaults.py_ : This file contains high-level factory functions (like bpe_multilingual() or
+english_basic_normalizer()) that stitch together entire TokenizerConfig pipelines with sensible pre-configured defaults
+for common use cases.
+
+Role in the process: They drastically reduce boilerplate. A user can define a complex pipeline without needing to
+manually specify every parameter, ensuring that base configurations (like fallback mechanisms and seed constants) are
+safe and standardized.
+
+### _where does the validation happen ??_
+
+Validation happens automatically during the instantiation of configuration objects. The entire abctokz configuration
+system is powered by Pydantic models, meaning validation occurs the moment you try to create a config object (e.g.,
+BPEConfig(vocab_size=-5)).
+
+All validation logic is centralized in a single file: src/abctokz/config/schemas.py
+
+the kind of invalid configs which would be caught are :
+
+#### Catching Invalid Float Ranges
+
+(must be in between 0 and 1 )
+
+this is written in the code block within the conflict/schemas.py file
+
+line 215:
+
+``
+    shrinking_factor: float = Field(default=UNIGRAM_SHRINKING_FACTOR, gt=0.0, lt=1.0)
+``
+
+### Unknown or Extra Arguments (Typos)
+
+If a user misspells a parameter (e.g., vobab_size=5000), the configuration forbids it rather than ignoring the typo.
+
+line 33 in schemas.py
+
+```aiignore
+model_config = {"extra": "forbid", "frozen": True}
+```
+
+### Walk through the construction step by step: config → normalizer → pre-tokenizer → model → trained tokenizer
+
+First, you define a blueprint using a configuration file. This is just a set of rules which
+cleaning and splitting methods you want to use. At this stage, the tokenizer is just data on a page; it doesn't
+actually "do" anything yet.
+
+Then, a factory function reads your blueprint and plugs in the active components, like the
+text cleaners (Normalizers) and word splitters (Pre-tokenizers). However, because the machine doesn't have a vocabulary
+yet, its really just incomplete . It includes a "placeholder" where the actual intelligence will eventually go.
+
+Then, You feed a large amount of text through your hollow machine. The trainer
+watches how the text is cleaned and split, calculates which character combinations appear most often, and builds a
+custom vocabulary. Once this vocabulary is ready, the system swaps out that "placeholder" for a real, functional model.
+
+and that makes out tokenizer ready.
+
+#### what kind of config inputs will fail ?
+
+i added
+
+```aiignore
+try:
+    # vocab_size must be >= 1 according to the schema
+    bad_config = BPEConfig(vocab_size=0)
+except ValidationError as e:
+    print(e)
+    
+try:
+    # Pairing a BPE model with a Unigram trainer
+    mismatched_config = TokenizerConfig(
+        model=BPEConfig(vocab_size=5000),
+        trainer=UnigramTrainerConfig(vocab_size=5000)
+    )
+except ValueError as e:
+    print(e)
+```
+
+within the abctokc/config/schemas.py and on running
+
+![error](reference_images/task4.png)
+
+By replacing generic Pydantic errors or cryptic downstream crashes with the custom check_trainer_model_alignment
+validator, you receive a clear, plain-English explanation of why two components are conflicting. It points directly to
+the vocab_size field, cites the specific rule violation (e.g., "greater than or equal to 1"), and identifies the exact
+invalid input variable responsible, making debugging significantly faster and more intuitive.
 
 ### Task 5 — Is It Truly Deterministic?
 
-The documentation claims the training output is perfectly repeatable, but I rarely trust docs until I've verified it myself. I set up a quick experiment (`experiments/determinism_bpe.py`) to train the `abctokz` BPE model twice from scratch on the exact same dataset to see if anything drifted.
+The documentation claims the training output is perfectly repeatable, but I rarely trust docs until I've verified it
+myself. I set up a quick experiment (`experiments/determinism_bpe.py`) to train the `abctokz` BPE model twice from
+scratch on the exact same dataset to see if anything drifted.
 
 ### What IS Deterministic?
 
-So, the experiment found that the core artifacts are bulletproof. Our tests confirmed these outputs are **100% identical** across runs:
+So, the experiment found that the core artifacts are bulletproof. Our tests confirmed these outputs are **100% identical
+** across runs:
 
-* **Vocabulary Order (`vocab.json`):** Both generated files were byte-for-byte matches (exactly 2529 chars). If you dig into the training code, it explicitly sorts frequency ties alphabetically. That prevents the random hash-map ordering bugs that usually plague Python dictionaries.
-* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every single time (2231 chars). 
-* **Token Outputs:** Encoding the same benchmark text through both tokenizer instances fired back the exact same token arrays and ID numbers.
+* **Vocabulary Order (`vocab.json`):** Both generated files were byte-for-byte matches (exactly 2529 chars). If you dig
+  into the training code, it explicitly sorts frequency ties alphabetically. That prevents the random hash-map ordering
+  bugs that usually plague Python dictionaries.
+* **Merge Rules (`merges.txt`):** The exact sequence of BPE merges is identical every single time (2231 chars).
+* **Token Outputs:** Encoding the same benchmark text through both tokenizer instances fired back the exact same token
+  arrays and ID numbers.
 
 *(I've attached a screenshot of the terminal output showing the matching arrays and file diffs:*
 
@@ -304,16 +451,24 @@ So, the experiment found that the core artifacts are bulletproof. Our tests conf
 
 While the compiled models are identical, the hardware execution is not:
 
-* **Training Time:** Run 1 clocked in at 0.0913 seconds, while Run 2 immediately dropped to 0.0099 seconds. 
+* **Training Time:** Run 1 clocked in at 0.0913 seconds, while Run 2 immediately dropped to 0.0099 seconds.
 
-This isn't a bug in the code. It is just the reality of CPU caching (the data was already warm in memory for the second run), thermal throttling, and OS background noise. The time varies, but it doesn't lessen the final tokenizer artifacts.
+This isn't a bug in the code. It is just the reality of CPU caching (the data was already warm in memory for the second
+run), thermal throttling, and OS background noise. The time varies, but it doesn't lessen the final tokenizer artifacts.
 
 ### Remaining Risks
 
-Even though this specific local test passed, determinism is incredibly fragile. Here are the edge cases that I think could realistically break this codebase:
+Even though this specific local test passed, determinism is incredibly fragile. Here are the edge cases that I think
+could realistically break this codebase:
 
-1. **Cross-Platform Math:** The Unigram model relies heavily on floating-point probabilities (`math.log`). Different CPU architectures (like an M-series Mac vs. an Intel server) handle deep decimal rounding slightly differently. A tiny precision difference at the 15th decimal place can flip a probability tie-breaker, completely altering the token boundaries.
-2. **Future Multi-threading:** Right now, the data pipeline is single-threaded. If a developer later tries to optimize the `_corpus_iter()` generator by parallelizing the file reads without strictly enforcing the order of the results, chunks of text will hit the trainer in a random sequence. That race condition will immediately destroy the determinism..
+1. **Cross-Platform Math:** The Unigram model relies heavily on floating-point probabilities (`math.log`). Different CPU
+   architectures (like an M-series Mac vs. an Intel server) handle deep decimal rounding slightly differently. A tiny
+   precision difference at the 15th decimal place can flip a probability tie-breaker, completely altering the token
+   boundaries.
+2. **Future Multi-threading:** Right now, the data pipeline is single-threaded. If a developer later tries to optimize
+   the `_corpus_iter()` generator by parallelizing the file reads without strictly enforcing the order of the results,
+   chunks of text will hit the trainer in a random sequence. That race condition will immediately destroy the
+   determinism..
 
 ```
 def _corpus_iter():
