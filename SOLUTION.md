@@ -59,7 +59,7 @@ the code block for encoder function:
 
 (line 93)
 
-```aiignore
+```python
  def encode(self, text: str) -> Encoding:
         """Encode *text* into an :class:`~abctokz.types.Encoding`.
 
@@ -78,7 +78,7 @@ the code block for encoder function:
 
 in this specific line of encoder function implemention
 
-```aiignore
+```python
         normalized = self._normalizer.normalize(text) if self._normalizer else text
 ```
 
@@ -91,7 +91,7 @@ if a normalizer exists, te rest of function operates on the variable *normalized
 
 in the specific line of encoder function
 
-```aiignore
+```python
         if self._pretokenizer:
             pre_tokens = self._pretokenizer.pre_tokenize(normalized)
         else:
@@ -112,7 +112,7 @@ pre tokenizer?*
 
 it does this in the 3rd stage, the tokenization process
 
-```aiignore
+```python
         cursor = 0
         for pre_tok in pre_tokens:
             # Find the offset of this pre_token in the normalized string
@@ -194,7 +194,7 @@ actively creating directories (`mkdir`), manually calculating SHA256 checksums, 
 scratch. It violently mixes core text-transformation logic with direct hard-drive I/O operations, which is a classic
 violation of the Single Responsibility Principle. It makes the orchestrator a "Fat Controller."
 
-```
+```python
 def save(self, path: str) -> None:
         out = ensure_dir(path)
         self._model.save(str(out))
@@ -443,7 +443,7 @@ So, the experiment found that the core artifacts are bulletproof. Our tests conf
 * **Token Outputs:** Encoding the same benchmark text through both tokenizer instances fired back the exact same token
   arrays and ID numbers.
 
-*(I've attached a screenshot of the terminal output showing the matching arrays and file diffs:*
+*(I've attached a screenshot of the terminal output showing the matching arrays and file diffs:)*
 
 ![OUTPUT_SCREENSHOT](/public/images/experiment_bpe.png)
 
@@ -470,7 +470,7 @@ could realistically break this codebase:
    chunks of text will hit the trainer in a random sequence. That race condition will immediately destroy the
    determinism..
 
-```
+```python
 def _corpus_iter():
             for path in corpus_paths:
                 with open(path, encoding="utf-8") as fh:
@@ -640,4 +640,60 @@ Add **inference-time class mapping** before encode:
 Then add these as special tokens in the tokenizer artifacts. This does not retrain model weights but converts unpredictable OOV surface forms into stable known categories, reducing `<unk>` spikes in production logs.
 
 If I had to pick one immediate operational fix for this repository: use BPE for multilingual inference and add `<EMOJI>/<URL>/<NUM>` preprocessing guards.
+
+GPT-4 is 1.6× more efficient on English but **2.1× less efficient on Devanagari** compared to an `abctokz` BPE tokenizer trained on a balanced bilingual corpus. This confirms that a purpose-built multilingual tokenizer is meaningful for Indic-script workloads.
+
+### Task 7 — Does Encode → Decode Get You Back to Start?
+
+I ran the `experiments/round_trip.py` script to stress-test the pipeline. The prompt gave a massive hint about NFD vs. NFC Unicode forms, so I fed the tokenizer exact visual duplicates of the word `"résumé"` and the Devanagari word `"नमस्ते"`, but encoded differently at the byte level. 
+
+The results perfectly highlight the difference between a "dumb" string parser and a smart NLP tokenizer. Here is exactly what is happening under the hood.
+
+### 1. The Exact Match (Lossless)
+For standard inputs like `'hello world'` or NFC-composed `'नमस्ते दुनिया'`, the round-trip is perfectly exact. 
+* **Why:** The normalizer looks at the text, sees it's already in its most compressed, canonical Unicode format (Normalization Form C which is NFC), and leaves it alone. The BPE model breaks it down into subwords, and the decoder glues it right back together. Byte for byte, input == output.
+
+*(I've attached a screenshot of the terminal output showing the matching arrays and file diffs):*
+
+![OUTPUT SCREENSHOT](/public/images/round_trip.png)
+
+### 2. The Lossy Match (Where I felt it gets weird)
+Things immediately drift when you pass in the **NFD (Decomposed)** version of `"résumé"` or `"नमस्ते"`.
+* **Visually:** NFD `"résumé"` looks identically perfect on the screen.
+* **Under the hood (NFD):** Though, it is actually 8 characters long! It is built using base letters plus invisible combining characters: `r`, `e`, `´` (combining acute accent), `s`, `u`, `m`, `e`, `´`.
+* **The Output:** When encoded and decoded, the string comes back as 6 characters long—the NFC version with fully composed `é` characters. Therefore, `raw_input != decoded_output`. The exact round-trip failed.
+
+**Is this a bug, an acceptable trade-off, or intentional design?**
+
+It is **100% intentional design**. 
+
+After a bit of research, I learn that if the normalizer didn't aggressively force everything into NFC format *before* handing it to the BPE model, the model would have to waste valuable vocabulary slots learning two completely different sets of tokens for the exact same word (depending on whether the user's OS keyboard uses NFC or NFD).
+
+By normalizing the input, we lose strict "byte fidelity" to the user's raw keystrokes, but we gain massive semantic efficiency. It is essentially standardizing our database schema.
+
+### 3. The Truth About the `round_trip_success_rate` Metric
+
+If we look at how the architects designed this metric inside `eval/metrics.py`, it reveals exactly what they care about (and what they are trying to hide).
+
+```python
+def round_trip_success_rate(
+    originals: list[str],
+    decoded: list[str],
+    normalized_originals: list[str] | None = None,
+) -> float:
+    targets = normalized_originals if normalized_originals is not None else originals
+    if not targets:
+        return 0.0
+    matches = sum(1 for t, d in zip(targets, decoded) if t == d)
+    return matches / len(targets)
+```
+
+**What it actually measures**: It measures strict, binary string equivalence. 
+
+It effectively asks: **"Did the Decoder output the exact same string of characters that we decided to use as the target?"**
+
+Crucially, by explicitly designing the function to accept normalized_originals and prioritizing it over originals, the metric is built to measure the reversibility of the Subword Model and Decoder phases only. It verifies if the BPE engine successfully reassembled the clean text that the normalizer handed to it.
+
+**What it does NOT measure:**
+Because it uses a strict check, it is a **binary pass/fail**. If a 5,000-word document successfully round-trips but loses a single comma, this metric scores it as a complete 0 for that document. It doesn't measure character-level error rates to tell you how broken the string is.
 
